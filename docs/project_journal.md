@@ -426,3 +426,64 @@ hosts are blocked), so they run in CI, which is set up in Feature 7.
 the evaluation set in Feature 7. Answers appear when complete rather than streaming, because citations are
 checked before anything is shown. Streamlit scrolls inside its main container, so "full page" screenshots
 show the viewport; each one is taken with the newest state in view.
+
+## Feature 7 — Evaluation, documentation and CI
+
+**Built:** the evaluation set `tests/evaluation/annual_report_questions.jsonl` (16 questions about the
+Microsoft 2023 Annual Report), its harness (`harness.py`), a page locator (`locate_pages.py`), a live
+runner (`run_eval.py`) and their tests; `docs/architecture.md`; the full `README.md`; the CI workflow
+`.github/workflows/test.yml`; and `.python-version` (3.13).
+
+**Design decisions**
+
+- *Question set:* each line has the question, a category (fact, financial, comparison, summary,
+  multi-part, follow-up, unsupported), whether it expects an answer or an abstention, the known facts, the
+  answer points (each a list of acceptable phrasings, such as `"211.9 billion"` or `"211,915"`), evidence
+  phrases from the report, and the expected source pages. Follow-ups name the question they follow and
+  share its conversation. Two questions (Apple's revenue, a 2030 forecast) must be declined.
+- *The set checks itself against the PDF:* a page is an expected source when it contains one of the
+  question's evidence phrases, and every answer point must appear on one of those pages. `locate_pages`
+  reports any phrase or point it can't find and `--write` fills in the pages, so a wrong fact or page
+  shows up as a failing check instead of a silently wrong expectation. The facts were written from
+  Microsoft's published fiscal 2023 results. The report couldn't be downloaded here, so its pages are
+  still empty in the file and get filled by one command once the PDF is added.
+- *Scoring:* an answer passes when the outcome is right (answered or declined), every point appears
+  (case, spacing, typography and Markdown ignored; numbers match whole, so "7%" doesn't match "17%"), a
+  cited page is an expected page, and a comparison or summary uses a table or bullets. A run passes when
+  every unsupported question is declined, at least 85% of answerable questions are answered, 80% of points
+  are found and 80% of answers cite an expected page; with 14 answerable questions, that allows one or two
+  misses.
+- *Same pipeline as the app:* the harness indexes the PDF with the ingestion graph and asks through
+  `Conversation`, so the evaluation measures what users get. It deletes its index at the end.
+- *Kept out of CI:* the live run is marked `live_llm` and `evaluation`, both excluded by the pytest
+  configuration, and it skips without the sample or valid settings. Every other test runs with provider
+  settings removed; tests marked `live_llm` keep the developer's real settings so the live run can work.
+- *The harness itself is tested offline:* a run on the fictional Northwind report with the rule-based
+  stand-in model covers scoring, follow-ups, reports and cleanup in every CI run.
+- *CI:* one job runs ruff and pytest with a 100% coverage floor; a matrix runs Playwright on Chromium,
+  Firefox and WebKit (fail-fast off) and uploads screenshots and reports. Actions use `checkout@v7`,
+  `setup-node@v7` and `upload-artifact@v7`; `setup-uv` stopped publishing major tags at v8, so it is
+  pinned to the v8.3.1 release commit. `.python-version` makes CI use the same Python as development.
+- *Architecture doc:* module map, both graphs as diagrams, failover and failure handling, state and
+  cleanup, security, logging, testing, and a table of alternatives considered.
+
+**Challenges and fixes**
+
+- The sample report's download hosts are blocked in this environment, so its pages couldn't be read.
+  Rather than guess page numbers, the evidence and locator approach lets the file verify the set.
+- The autouse fixture that removes real provider settings would have made the live test always skip; it
+  now leaves tests marked `live_llm` alone.
+- `astral-sh/setup-uv@v8` doesn't exist (v8 publishes only exact versions); pinned to a release commit.
+
+**Tests:** 296 passed (28 new evaluation tests), coverage 100% of `genai_chatbot/` and `app.py`; ruff clean.
+The two opt-in evaluation tests skip cleanly without the sample PDF. Playwright: 6 passed on Chromium.
+
+**Gate:** the journal and README are complete and the CI configuration is present. Still open: the
+private repository `pdf-document-chatbot-exam` (it has to be created on GitHub before the push), and
+filling the expected pages from the sample PDF.
+
+**Tradeoffs:** phrase matching can miss a correct answer worded in an unexpected way; the accepted
+phrasings reduce that, and the report shows every answer for a human check. A page hit is lenient when a
+figure appears on several pages (statements, notes, highlights), which is fair since any of them supports
+the answer. A live run makes about 35 model calls: one outline call, then two per question and three
+per follow-up.

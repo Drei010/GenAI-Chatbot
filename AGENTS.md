@@ -19,6 +19,13 @@ Project directives for anyone, human or AI agent, who changes this repository.
   `tests/support/fake_llm.py`. The default test run never calls a real provider; live checks carry the
   `live_llm` marker and run only on request.
 
+## Evaluation
+
+- `tests/evaluation/annual_report_questions.jsonl` is checked against the sample report with
+  `uv run python -m tests.evaluation.locate_pages`; rerun it with `--write` after changing a question.
+- Live evaluation (`uv run python -m tests.evaluation.run_eval`) calls real providers and is never part of
+  CI.
+
 ## Validation
 
 - Validate data that crosses a boundary with Pydantic models (`genai_chatbot/config.py`,

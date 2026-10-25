@@ -27,8 +27,13 @@ VALID_SETTINGS = {
 
 
 @pytest.fixture(autouse=True)
-def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No provider env vars, no .env file and no Streamlit secrets unless a test adds them."""
+def isolated_settings(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No provider env vars, no .env file and no Streamlit secrets unless a test adds them.
+
+    Live tests (marked `live_llm`, never part of the default run) use the developer's real settings.
+    """
+    if request.node.get_closest_marker("live_llm"):
+        return
     for name in SETTINGS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(config, "_read_streamlit_secrets", lambda: {})
