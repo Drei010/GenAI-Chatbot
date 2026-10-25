@@ -487,3 +487,33 @@ phrasings reduce that, and the report shows every answer for a human check. A pa
 figure appears on several pages (statements, notes, highlights), which is fair since any of them supports
 the answer. A live run makes about 35 model calls: one outline call, then two per question and three
 per follow-up.
+
+## Sample report and manual check
+
+The official PDF couldn't be downloaded here, so the report's Word edition (`2023_Annual_Report.docx`)
+was supplied instead. LibreOffice 24.2 converted it (`soffice --headless --convert-to pdf`), and the
+result is tracked as `samples/microsoft_2023_annual_report.pdf`: 84 pages and about 274,000 characters of
+text. The cover and back page are images, which the app reports as two pages without selectable text. The
+file's metadata names no person.
+
+- *Facts checked against the report:* `locate_pages` found every evidence phrase and answer point and
+  saved the expected pages. The summary question's evidence (the three headline figures) matched ten
+  pages, from the statements to the notes; it now points at the summary results table and the
+  year-over-year discussion in the MD&A (pages 30 and 31), so a page hit means the answer drew on them.
+- *Upload (the Feature 2 gate):* in the app with the stand-in model, the sample was read and indexed in
+  13 to 28 seconds: 84 pages, model-assisted chunking, 385 passages (median 899 characters).
+- *Retrieval, without a model:* searching with each question as written puts a passage from an expected
+  page in the top four for 12 of the 14 answerable questions. The misses are the compound workforce
+  question and the summary, which the planner splits into focused searches; "cost of the January 2023
+  workforce reduction" ranks the right passage first. Wording far from the report's still misses: "How
+  many jobs did Microsoft cut?" ranks it 88th of 385.
+- *Answers:* the stand-in model only picks sentences, so its replies show retrieval and citations working
+  (revenue cited from the segment table on page 31, operating income from the income statement on
+  page 43) but say nothing about answer quality. That needs the live run with provider keys, which this
+  environment doesn't have.
+
+**Fix:** the sidebar wrapped the long filename mid-word ("…report.pd" then "f"); names now wrap after
+`_`, `.` or `-`.
+
+**Tests:** 297 passed, coverage 100%; ruff clean. The offline evaluation check
+(`pytest -m "evaluation and not live_llm"`) now runs against the sample and passes.

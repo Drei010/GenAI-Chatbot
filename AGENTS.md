@@ -21,8 +21,10 @@ Project directives for anyone, human or AI agent, who changes this repository.
 
 ## Evaluation
 
-- `tests/evaluation/annual_report_questions.jsonl` is checked against the sample report with
-  `uv run python -m tests.evaluation.locate_pages`; rerun it with `--write` after changing a question.
+- `tests/evaluation/annual_report_questions.jsonl` is checked against the sample report
+  (`samples/microsoft_2023_annual_report.pdf`, the only tracked PDF; its page numbers are the expected
+  pages) with `uv run python -m tests.evaluation.locate_pages`; rerun it with `--write` after changing a
+  question or the sample.
 - Live evaluation (`uv run python -m tests.evaluation.run_eval`) calls real providers and is never part of
   CI.
 

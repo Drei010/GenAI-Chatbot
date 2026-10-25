@@ -88,10 +88,12 @@ Open http://localhost:8501, upload a PDF in the sidebar, wait for "is ready", an
 
 ## Sample document
 
-The demo document is Microsoft's 2023 Annual Report. Download it from Microsoft's
-[official filing page](https://microsoft.gcs-web.com/static-files/985047d1-e200-4865-837a-c7f03ecb6212)
-and save it as `samples/microsoft_2023_annual_report.pdf` (the one PDF the repository is allowed to
-track). Upload it through the sidebar and try:
+The demo document is Microsoft's 2023 Annual Report, included as
+`samples/microsoft_2023_annual_report.pdf` (the one PDF the repository tracks). It was converted from the
+report's Word edition with LibreOffice (`soffice --headless --convert-to pdf 2023_Annual_Report.docx`), so
+its page numbers may differ from Microsoft's own PDF on the
+[official filing page](https://microsoft.gcs-web.com/static-files/985047d1-e200-4865-837a-c7f03ecb6212);
+the evaluation's expected pages refer to the included file. Upload it through the sidebar and try:
 
 - What was Microsoft's total revenue in fiscal year 2023, and how much did it grow?
 - And what about operating income? *(a follow-up)*
@@ -99,8 +101,8 @@ track). Upload it through the sidebar and try:
 - Summarize the key financial results for fiscal year 2023.
 - What was Apple's revenue in fiscal year 2023? *(the report doesn't say, so the app declines)*
 
-It is a long report, so indexing takes a little longer and makes one model call to find its section
-structure.
+Indexing its 84 pages takes under half a minute and makes one model call to find the section structure.
+The cover and back page are images, so the app notes that two pages have no selectable text.
 
 ## Tests
 
@@ -134,11 +136,12 @@ financial figures, a comparison table, a summary, a multi-part question, follow-
 report can't answer. Each answerable question lists its known facts, the points a correct answer must
 state (with acceptable phrasings), evidence phrases from the report, and the expected source pages.
 
-With the sample PDF in place:
+The question set is checked against the included sample:
 
 ```bash
-# Check every fact against the report and fill in the expected source pages (no model calls)
-uv run python -m tests.evaluation.locate_pages --write
+# Check every fact against the report (no model calls); add --write to refresh the expected pages
+# after changing a question or the sample
+uv run python -m tests.evaluation.locate_pages
 uv run pytest -m "evaluation and not live_llm"
 
 # Run the questions against your configured models (costs tokens; never part of CI)
@@ -202,6 +205,8 @@ docs/project_journal.md      Per-feature build log
 - Every source cites a single page; a passage that continues across a page break is split at the break.
 - Answers appear when they are complete (not streamed), because citations are checked first.
 - Excerpts are chosen by word and number overlap, so a paraphrased claim may get a less precise excerpt.
+- Retrieval uses embeddings only (no keyword search), so a question worded very differently from the
+  document ("cut jobs" for "reduced our workforce") can miss the right passage.
 - All sessions share one server process, so memory grows with the number of open sessions and documents.
 
 ## Troubleshooting
