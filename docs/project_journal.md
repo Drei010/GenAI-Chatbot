@@ -344,7 +344,7 @@ sessions share one process, so a very large number of concurrent sessions is bou
 - The test `Script` returned queued responder functions instead of calling them, which looked like
   malformed model output; queued functions are now called, and a script entry can also be a fixed result.
 
-**Tests:** 258 passed (27 QA graph integration tests, 16 citation, 5 new prompt and 4 schema tests);
+**Tests:** 258 passed (28 QA graph integration tests, 16 citation, 5 new prompt and 4 schema tests);
 coverage 100% of `genai_chatbot/` and `app.py`. No test calls a provider.
 
 **Gate:** mocked-provider integration tests cover a simple question, a decomposed question (with
