@@ -35,11 +35,17 @@ _MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|>~<$])")
 _IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _LINK_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:.*$", re.MULTILINE)
+_NAME_SEPARATOR = re.compile(r"([_.\-])")
 
 
 def escape_markdown(text: str) -> str:
     """Show document or user text literally: no formatting, links, or math from its characters."""
     return _MARKDOWN_SPECIAL.sub(r"\\\1", text)
+
+
+def breakable(name: str) -> str:
+    """Let a long filename wrap after its separators (_ . -) rather than mid-word in the narrow sidebar."""
+    return _NAME_SEPARATOR.sub("\\1\u200b", name)
 
 
 def answer_markdown(text: str) -> str:
@@ -225,7 +231,7 @@ def render_sidebar() -> None:
 
     active: ActiveDocument | None = st.session_state.active
     if active:
-        details.markdown(f"**{escape_markdown(active.filename)}**  \n{active.page_count} pages")
+        details.markdown(f"**{escape_markdown(breakable(active.filename))}**  \n{active.page_count} pages")
     controls.button(
         "Reset chat and document",
         on_click=reset_session,

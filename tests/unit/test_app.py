@@ -98,6 +98,7 @@ def test_uploading_a_pdf_reads_and_indexes_it(northwind_pdf: bytes) -> None:
 
     assert not at.exception and not at.error
     assert shown(at.success[0].value) == "**northwind.pdf** is ready: 5 pages read."
+    assert shown(at.sidebar.markdown[0].value) == "**northwind.\u200bpdf**  \n5 pages"
     index = at.session_state.index
     assert index.count() > 0
     assert collections_for(at) == {index.name}
@@ -326,6 +327,12 @@ def test_answers_keep_formatting_but_lose_links_images_and_math() -> None:
     )
 
     assert app.answer_markdown(text) == ("Revenue was \\$412.6 million [1] chart site \\~5%\n![pixel][r]\n")
+
+
+def test_long_filenames_can_wrap_after_their_separators() -> None:
+    assert app.breakable("microsoft_2023_annual-report.pdf") == (
+        "microsoft_\u200b2023_\u200bannual-\u200breport.\u200bpdf"
+    )
 
 
 def test_user_and_document_text_is_shown_literally() -> None:
