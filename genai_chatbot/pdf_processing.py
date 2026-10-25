@@ -131,6 +131,11 @@ def _open(data: bytes) -> PdfReader:
     return reader
 
 
+def document_fingerprint(data: bytes) -> str:
+    """The document ID: SHA-256 of the uploaded bytes, so the same file always gets the same ID."""
+    return hashlib.sha256(data).hexdigest()
+
+
 def extract_document(data: bytes, filename: str) -> ExtractedDocument:
     """Validate an upload and return its cleaned, 1-based page texts.
 
@@ -170,7 +175,7 @@ def extract_document(data: bytes, filename: str) -> ExtractedDocument:
         raise PDFProcessingError("no_text")
 
     return ExtractedDocument(
-        document_id=hashlib.sha256(data).hexdigest(),
+        document_id=document_fingerprint(data),
         filename=_display_name(filename),
         pages=[PageText(page_number=number, text=text) for number, text in enumerate(texts, start=1)],
     )

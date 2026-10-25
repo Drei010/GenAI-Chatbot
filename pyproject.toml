@@ -41,7 +41,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["genai_chatbot"]
+source = ["genai_chatbot", "app"]
 branch = true
 
 [tool.coverage.report]

@@ -4,14 +4,23 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import streamlit as st
 
-from genai_chatbot.config import SettingsResult, SetupIssue, load_settings
+from genai_chatbot.config import AppSettings, SettingsResult, SetupIssue, load_settings
+from genai_chatbot.graphs.ingestion import IngestionError, build_ingestion_graph, ingest
 from genai_chatbot.observability import Correlation, configure_logging, log_stage, new_id
-from genai_chatbot.pdf_processing import PDFProcessingError, extract_document
+from genai_chatbot.pdf_processing import PDFProcessingError, document_fingerprint
+from genai_chatbot.providers import LLMRouter, build_router
+from genai_chatbot.vector_store import DocumentIndex, warm_up
 
 APP_TITLE = "PDF Knowledge Chatbot"
+
+RouterFactory = Callable[[AppSettings], LLMRouter]
+
+NO_PASSAGES = "This PDF's text couldn't be prepared for questions. Try another copy of the file."
+PREPARE_FAILED = "Something went wrong while preparing this PDF. Please try again."
 
 SETUP_HELP = """
 **How to fix it**
@@ -46,6 +55,7 @@ class ActiveDocument:
     filename: str
     page_count: int
     pages_without_text: int
+    notices: tuple[str, ...] = ()
 
 
 def render_setup_message(issues: list[SetupIssue]) -> None:
@@ -55,12 +65,22 @@ def render_setup_message(issues: list[SetupIssue]) -> None:
     st.markdown(SETUP_HELP)
 
 
-def init_session() -> None:
+@st.cache_resource(show_spinner="Getting ready…")
+def prepare_search_model() -> bool:
+    """Load the local embedding model once per process, before anyone uploads a file."""
+    warm_up()
+    return True
+
+
+def init_session(settings: AppSettings, router_factory: RouterFactory) -> None:
     state = st.session_state
     state.setdefault("session_id", new_id())
     state.setdefault("generation", 0)
     state.setdefault("active", None)
     state.setdefault("upload_error", None)
+    state.setdefault("index", None)
+    if state.get("router") is None:
+        state.router = router_factory(settings)
 
 
 def correlation() -> Correlation:
@@ -68,9 +88,13 @@ def correlation() -> Correlation:
 
 
 def clear_document() -> None:
-    """Forget the active document and everything derived from it."""
-    st.session_state.active = None
-    st.session_state.upload_error = None
+    """Forget the active document and everything derived from it, including its index."""
+    state = st.session_state
+    if state.get("index") is not None:
+        state.index.delete()
+    state.index = None
+    state.active = None
+    state.upload_error = None
 
 
 def reset_session() -> None:
@@ -79,25 +103,53 @@ def reset_session() -> None:
     st.session_state.generation += 1
 
 
+def _upload_failure(exc: Exception) -> tuple[str, str, str]:
+    """(outcome, error kind, user message) for a failed upload. Unexpected errors stay generic."""
+    if isinstance(exc, PDFProcessingError):
+        return "rejected", exc.kind, exc.message
+    if isinstance(exc, IngestionError):
+        return "rejected", "no_passages", NO_PASSAGES
+    return "error", type(exc).__name__, PREPARE_FAILED
+
+
 def process_upload(upload_key: str, filename: str, data: bytes) -> None:
+    """Read, chunk and index a new upload, showing progress; replaces any previous document."""
     clear_document()
-    with st.status(f"Reading {filename}…", expanded=False) as status:
-        with log_stage("upload", correlation()) as details:
+    state = st.session_state
+    request = correlation()
+    index = DocumentIndex(state.session_id, document_fingerprint(data))
+    graph = build_ingestion_graph(index, state.router, request)
+
+    with st.status(f"Preparing {filename}…", expanded=True) as status:
+        progress = st.progress(0.0, text="Reading the PDF…")
+
+        def show_progress(event: dict[str, Any]) -> None:
+            progress.progress(event["fraction"], text=event["message"])
+
+        with log_stage("upload", request) as details:
             try:
-                document = extract_document(data, filename)
-            except PDFProcessingError as exc:
-                details.update(outcome="rejected", error_kind=exc.kind)
-                status.update(label="This file can't be used", state="error")
-                st.session_state.upload_error = (upload_key, exc.message)
+                result = ingest(graph, filename, data, on_progress=show_progress)
+            except Exception as exc:
+                index.delete()
+                outcome, kind, message = _upload_failure(exc)
+                details.update(outcome=outcome, error_kind=kind)
+                status.update(label="This file can't be used", state="error", expanded=False)
+                state.upload_error = (upload_key, message)
                 return
-            details["page_count"] = document.page_count
-        status.update(label=f"Read {document.page_count} pages", state="complete")
-    st.session_state.active = ActiveDocument(
+            details.update(
+                page_count=result.page_count, chunk_count=result.chunk_count, strategy=result.strategy
+            )
+        progress.empty()
+        status.update(label=f"Ready: {result.page_count} pages read", state="complete", expanded=False)
+
+    state.index = index
+    state.active = ActiveDocument(
         upload_key=upload_key,
-        document_id=document.document_id,
-        filename=document.filename,
-        page_count=document.page_count,
-        pages_without_text=document.pages_without_text,
+        document_id=result.document_id,
+        filename=result.filename,
+        page_count=result.page_count,
+        pages_without_text=result.pages_without_text,
+        notices=result.notices,
     )
 
 
@@ -152,9 +204,14 @@ def render_main_area() -> None:
     st.success(f"**{active.filename}** is ready: {active.page_count} pages read.", icon="✅")
     if active.pages_without_text:
         st.caption(f"{active.pages_without_text} page(s) had no selectable text and will be skipped.")
+    for notice in active.notices:
+        st.warning(notice, icon="⚠️")
 
 
-def main(settings_loader: Callable[[], SettingsResult] = load_settings) -> None:
+def main(
+    settings_loader: Callable[[], SettingsResult] = load_settings,
+    router_factory: RouterFactory = build_router,
+) -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
     st.title(APP_TITLE)
     st.caption("Upload a PDF, ask questions in plain language, and get answers with page-level sources.")
@@ -164,8 +221,9 @@ def main(settings_loader: Callable[[], SettingsResult] = load_settings) -> None:
         render_setup_message(result.issues)
         st.stop()
     configure_logging(result.settings.log_level)
+    prepare_search_model()
 
-    init_session()
+    init_session(result.settings, router_factory)
     render_sidebar()
     render_main_area()
 

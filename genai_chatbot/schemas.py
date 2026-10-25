@@ -96,3 +96,16 @@ class SectionOutline(BaseModel):
     headings: list[OutlineHeading] = Field(
         description="The candidates that start a section, in document order. Empty if none do."
     )
+
+
+class RetrievedPassage(BaseModel):
+    """A chunk returned by a search, carrying everything needed to cite it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    chunk_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    page_number: int = Field(ge=1)
+    text: str = Field(min_length=1)
+    section_title: str | None = None
+    score: float = Field(description="Cosine similarity to the query, from -1 to 1; higher is closer.")

@@ -217,3 +217,60 @@ and some seconds to each complex upload. Header removal ignores digits, so a lin
 only a number changing ("Store 7", "Store 8") is treated as a running header; real annual reports rarely
 open most pages that way. Recursive overlap applies at the separator level, so paragraphs that fill a chunk
 exactly don't overlap the next one.
+
+## Feature 4 — Chroma indexing and retrieval
+
+**Built:** `genai_chatbot/vector_store.py` (`DocumentIndex`), the `RetrievedPassage` model, and the upload
+flow in `app.py` that now runs the whole ingestion graph with a progress bar, keeps the index in session
+state, and drops it on reset, replacement, file removal or failure.
+
+**Design decisions**
+
+- *One collection per session and document.* Chroma's ephemeral clients share one in-memory store per
+  process, so isolation can't come from separate clients. Each index gets a unique collection name
+  (`pdfchat-<session>-<document>-<random>`) and every query also filters on `document_id`, so a passage can
+  only come back from the collection it was written to, for the document it belongs to.
+- *Local embeddings:* Chroma's ONNX build of `all-MiniLM-L6-v2` (384 dimensions, unit-length vectors), so
+  collections use cosine distance and each passage carries a similarity score. No PyTorch, and no text
+  leaves the machine for embedding. The model is downloaded once into Chroma's cache and loaded at app
+  start (`st.cache_resource`) rather than during the first upload.
+- *Nothing on disk:* `EphemeralClient` with telemetry off. The only file written is the model cache.
+- *Up to four passages per query:* `search` caps results at four (fewer when the index is smaller) and
+  returns chunk ID, filename, page, exact text, section title and score.
+- *Cleanup that can't be forgotten:* `delete()` drops the collection and is idempotent, and a
+  `weakref.finalize` hook drops it if a session discards the index without calling `delete()` (Streamlit
+  throws away the state of closed browser sessions).
+- *Upserts:* indexing the same chunks twice doesn't create duplicates, and chunks from another document are
+  refused.
+- *Upload errors at the UI boundary:* PDF problems keep their specific message, a document that can't be
+  chunked gets "couldn't be prepared for questions", and anything unexpected gets a generic "Something went
+  wrong" while the log records the exception type. The index is deleted in every failure path.
+- *Testability:* `main()` takes a `router_factory`, so AppTests (and later the Playwright app) run the real
+  app with a scripted model and never call a provider.
+
+**Challenges and fixes**
+
+- Deleted Chroma collections raise `NotFoundError` on any later call, so the index tracks its own state
+  (`is_deleted`) and returns nothing instead of failing.
+- `AppTest.from_function` runs a function's source as a script without `from __future__ import annotations`,
+  so a type annotation in its signature raised `NameError`; the runner function is now unannotated.
+- `app.py` wasn't included in coverage; added it to the coverage sources and covered the two branches it
+  exposed (reruns with the same file, pages without text).
+
+**Tests:** 205 passed (19 vector store integration tests, 11 app tests); 100% coverage of `genai_chatbot/`
+and `app.py`. Manual check: uploaded a generated PDF in Chromium against the running app and confirmed the
+progress box, the ready state, and log lines with stage durations and no document text.
+
+**Gate**
+
+- Relevant retrieval: six questions about the fictional report each rank the passage holding the answer
+  first, using the real embedding model.
+- Source metadata: every retrieved passage matches its indexed chunk's ID, filename, page, text and section.
+- Cleanup: reset, replacement, file removal and failed uploads all leave no collection behind (checked
+  against the Chroma client), and a forgotten index drops its own collection.
+- Isolation: two sessions indexing the same document get separate collections, a reset in one leaves the
+  other intact, and a replacement document only ever returns its own passages.
+
+**Tradeoffs:** MiniLM is small and fast but weaker than larger embedding models on financial jargon and
+numbers; retrieval quality on the Microsoft report is checked by the evaluation set in Feature 7. All
+sessions share one process, so a very large number of concurrent sessions is bounded by memory.
