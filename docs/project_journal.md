@@ -274,3 +274,88 @@ progress box, the ready state, and log lines with stage durations and no documen
 **Tradeoffs:** MiniLM is small and fast but weaker than larger embedding models on financial jargon and
 numbers; retrieval quality on the Microsoft report is checked by the evaluation set in Feature 7. All
 sessions share one process, so a very large number of concurrent sessions is bounded by memory.
+
+## Feature 5 — Question planning and answer graph
+
+**Built:** `genai_chatbot/graphs/qa.py` (the QA graph and `Conversation`), `genai_chatbot/citations.py`
+(citation checking, renumbering and excerpt selection), the follow-up, planning and answer prompts in
+`genai_chatbot/prompts.py`, and the plan, answer, citation and chat-turn models in `genai_chatbot/schemas.py`.
+
+**Design decisions**
+
+- *Graph:* `resolve_question → plan_queries → (direct) retrieve_direct | (decomposed) retrieve_decomposed →
+  synthesize → validate_citations → respond`. The direct/decomposed split is a LangGraph conditional edge
+  on the plan. A configuration error at any model step, or a failed synthesis, routes straight to
+  `respond` with a service message.
+- *Follow-ups:* the first question in a conversation skips the rewrite call. Later questions are rewritten
+  into a standalone question from the latest eight messages (four exchanges); citation numbers and service
+  errors are stripped from that context, and long answers are cut to 600 characters.
+- *Planning:* the model returns `decompose`, up to four queries and a response style (prose, bullets or
+  table). The model validator removes blank and duplicate queries, keeps at most four, and keeps
+  `decompose` consistent with the query count. This lives in Pydantic rather than in JSON-schema length
+  limits because Anthropic's structured outputs don't support array length constraints (the SDK strips
+  them, so the model never sees them), and rejecting a five-query plan would waste a usable answer.
+- *Planning failure:* one search with the question. The plan says "the original question"; this uses
+  the follow-up-resolved question when there is one, since that is the user's question with its
+  references filled in. If the rewrite itself fails (other than a configuration error), the raw question
+  is used.
+- *Retrieval:* up to four passages per query, deduplicated by chunk ID and by identical text, in query
+  order. No similarity threshold: the answer model judges support, and if nothing comes back at all the
+  graph abstains without calling it.
+- *Citations are labels, not metadata:* passages reach the model as `<passage id="P3" section="…">` with no
+  page or filename, and the model cites `[P3]` inline and in `citation_ids`. Any label that wasn't
+  retrieved, or a supported answer that cites nothing, turns the reply into an abstention ("I couldn't
+  match an answer to the document's text…"). Valid labels are renumbered `[1]`, `[2]` in order of first
+  use, and each source's filename, page and excerpt come from the retrieved chunk.
+- *Excerpts:* the sentence or table line of the passage that shares the most words and figures with the
+  claims citing it (figures weigh three times as much), extended by the next line when the match is a
+  heading or table row, capped at 240 characters with an ellipsis when cut. Always copied from the passage.
+- *Abstention text is fixed* ("I couldn't find an answer to that in the document."), so an unsupported
+  reply never shows model text that could contain an unsupported claim.
+- *Conversation state:* each `Conversation` has a LangGraph `InMemorySaver` and a thread ID made of the
+  session, document and a random suffix, so a re-upload of the same file after a reset starts clean. The
+  saver's serializer allowlists the app's own models; LangGraph 1.x warns that unregistered types will be
+  refused on load. `history()` reads the conversation back from the checkpointer, and `clear()` deletes
+  the thread.
+- *Unexpected errors* (say, the index failing) become "Something went wrong while answering", and an
+  assistant turn is written to the thread so the history stays in question/answer pairs.
+- *Logs:* one stage line each for resolve, plan, retrieve, answer and validate (route, query count,
+  retrieval count, passage count, response style, citation count, outcome) and a final `answer` event, all
+  under one request ID. Tests check that no question or document text appears.
+
+**Prompt refinements**
+
+- Passage tags first carried the section path with its ` > ` separators, which put `>` inside the tag;
+  separators are now ` / `, and angle brackets and quotes in titles are replaced.
+- A passage containing `</passage>` could close its tag early, so that sequence is broken up
+  (`</ passage`) before formatting.
+- The answer prompt says not to add page numbers, filenames or a sources list, because the app adds
+  sources itself and anything the model writes there would be unchecked.
+- Financial rules: copy units and periods as written, keep fiscal and calendar years apart, show and cite
+  the inputs to any calculation, and report conflicting figures with their periods.
+
+**Challenges and fixes**
+
+- Sentence splitting broke numbered headings ("1." / "Financial Highlights") and split sentences that wrap
+  across PDF lines. Units are now lines joined where the next line starts in lower case, then sentences
+  split only after a word, percentage, bracket or four-digit year.
+- Excerpts first extended every short match with the next sentence, which appended unrelated text to short
+  complete sentences; only fragments (headings and table rows) are extended now.
+- The test `Script` returned queued responder functions instead of calling them, which looked like
+  malformed model output; queued functions are now called, and a script entry can also be a fixed result.
+
+**Tests:** 258 passed (27 QA graph integration tests, 16 citation, 5 new prompt and 4 schema tests);
+coverage 100% of `genai_chatbot/` and `app.py`. No test calls a provider.
+
+**Gate:** mocked-provider integration tests cover a simple question, a decomposed question (with
+deduplication and the four-query cap), follow-ups (rewrite plus the eight-message window), financial
+answers (units, periods, fiscal year), summaries as cited bullets, comparison tables with a source per
+row, failover on every model step, planning fallback, service errors, bad credentials without failover,
+malformed output, citation validation (unknown, missing and listed-only labels) and unsupported
+questions.
+
+**Tradeoffs:** a follow-up costs three model calls (rewrite, plan, answer) and a first question two; a
+single combined call would be faster but harder to test and to fall back from. Strict citation checking
+can turn a correct but mis-cited answer into an abstention, which is the safer failure. Excerpts are chosen
+lexically, so a paraphrased claim may get a less precise excerpt. Model calls use provider defaults (no
+extended thinking), keeping the app provider-neutral and responsive.

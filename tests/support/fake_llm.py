@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -11,6 +12,7 @@ from langchain_core.runnables import RunnableLambda
 
 from genai_chatbot.observability import Correlation
 from genai_chatbot.providers import LLMRouter, ModelEndpoint
+from genai_chatbot.schemas import AnswerDraft, QueryPlan, ResponseStyle
 
 Responder = Callable[[type, list[BaseMessage]], Any]
 
@@ -43,18 +45,27 @@ class FakeChatModel:
 
 
 class Script:
-    """Answers each schema from a queue of prepared results (or a function of the messages)."""
+    """Answers each schema with a fixed result, a queue of results, or a function of the messages.
+
+    Queue items may themselves be functions of the messages. A result that is an exception is raised.
+    """
 
     def __init__(self, responses: dict[type, list[Any] | Callable[[list[BaseMessage]], Any]] | None = None):
         self.responses = dict(responses or {})
 
     def __call__(self, schema: type, messages: list[BaseMessage]) -> Any:
-        entry = self.responses.get(schema)
-        if callable(entry):
-            return entry(messages)
-        if entry:
-            return entry.pop(0)
-        raise AssertionError(f"unexpected model call for {schema.__name__}")
+        if schema not in self.responses:
+            raise AssertionError(f"unexpected model call for {schema.__name__}")
+        entry = self.responses[schema]
+        if isinstance(entry, list):
+            if not entry:
+                raise AssertionError(f"no scripted {schema.__name__} responses left")
+            entry = entry.pop(0)
+        return entry(messages) if _is_responder(entry) else entry
+
+
+def _is_responder(item: Any) -> bool:
+    return callable(item) and not isinstance(item, BaseException | type)
 
 
 def rate_limited() -> Exception:
@@ -86,3 +97,40 @@ def make_router(
 
 
 TEST_CORRELATION = Correlation(session_id="test-session", request_id="test-request")
+
+
+# Question-answering helpers: read the passages a prompt offered and answer from them.
+
+_PASSAGE = re.compile(r'<passage id="(P\d+)"[^\n]*>\n(.*?)\n</passage>', re.DOTALL)
+
+
+def passages_in(messages: list[BaseMessage]) -> dict[str, str]:
+    """Passage label -> text, as shown to the model in the answer prompt."""
+    return dict(_PASSAGE.findall(messages[-1].content))
+
+
+def label_for(messages: list[BaseMessage], fact: str) -> str:
+    for label, text in passages_in(messages).items():
+        if fact in text:
+            return label
+    raise AssertionError(f"no retrieved passage contains {fact!r}")
+
+
+def plan(*queries: str, style: ResponseStyle = "prose") -> QueryPlan:
+    return QueryPlan(decompose=len(queries) > 1, queries=list(queries), response_style=style)
+
+
+def cite(template: str, style: ResponseStyle = "prose", **facts: str) -> Callable[[list[BaseMessage]], Any]:
+    """An answer responder: `template` with each {name} replaced by a citation of the passage holding
+    facts[name], so tests don't depend on retrieval order."""
+
+    def respond(messages: list[BaseMessage]) -> AnswerDraft:
+        labels = {name: label_for(messages, fact) for name, fact in facts.items()}
+        return AnswerDraft(
+            response_style=style,
+            answer=template.format(**{name: f"[{label}]" for name, label in labels.items()}),
+            citation_ids=sorted(set(labels.values())),
+            status="supported",
+        )
+
+    return respond

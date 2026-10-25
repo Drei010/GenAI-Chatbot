@@ -109,3 +109,103 @@ class RetrievedPassage(BaseModel):
     text: str = Field(min_length=1)
     section_title: str | None = None
     score: float = Field(description="Cosine similarity to the query, from -1 to 1; higher is closer.")
+
+
+# Question answering
+
+ResponseStyle = Literal["prose", "bullets", "table"]
+AnswerStatus = Literal["answered", "unsupported", "error"]
+
+MAX_SUBQUESTIONS = 4
+HISTORY_MESSAGES = 8
+
+
+class StandaloneQuestion(BaseModel):
+    """Model output for follow-up resolution."""
+
+    question: str = Field(
+        description="The latest message rewritten so it can be understood without the conversation."
+    )
+
+
+class QueryPlan(BaseModel):
+    """Model output for retrieval planning. Normalized so it holds one to four distinct queries."""
+
+    decompose: bool = Field(
+        description="True when the question has several parts or needs facts from different places."
+    )
+    queries: list[str] = Field(
+        description="Search queries: one when decompose is false, otherwise up to four self-contained "
+        "subquestions, one per part of the question."
+    )
+    response_style: ResponseStyle = Field(
+        description="table to compare items or periods, bullets for summaries or lists, prose otherwise."
+    )
+
+    @model_validator(mode="after")
+    def _normalize(self) -> QueryPlan:
+        queries: list[str] = []
+        for query in self.queries:
+            text = " ".join(query.split())
+            if text and text.lower() not in {q.lower() for q in queries}:
+                queries.append(text)
+        if not queries:
+            raise ValueError("the plan has no search queries")
+        self.queries = queries[:MAX_SUBQUESTIONS] if self.decompose else queries[:1]
+        self.decompose = len(self.queries) > 1
+        return self
+
+
+class AnswerDraft(BaseModel):
+    """Model output for synthesis: the answer with passage IDs (P1, P2, ...) as citations."""
+
+    response_style: ResponseStyle = Field(description="The format used for the answer.")
+    answer: str = Field(
+        description="Markdown answer that cites passages inline in square brackets, for example [P2]."
+    )
+    citation_ids: list[str] = Field(description="Every passage ID cited in the answer, for example P2.")
+    status: Literal["supported", "unsupported"] = Field(
+        description="supported when the passages answer the question, at least in part; unsupported "
+        "when they don't."
+    )
+
+
+class Citation(BaseModel):
+    """A source shown under an answer. Every field comes from the retrieved passage, not the model."""
+
+    model_config = ConfigDict(frozen=True)
+
+    number: int = Field(ge=1)
+    chunk_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    page_number: int = Field(ge=1)
+    excerpt: str = Field(min_length=1)
+
+
+class ChatAnswer(BaseModel):
+    """What the user sees for one question."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: AnswerStatus
+    response_style: ResponseStyle = "prose"
+    text: str = Field(min_length=1)
+    citations: list[Citation] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _only_answers_have_sources(self) -> ChatAnswer:
+        if self.status == "answered" and not self.citations:
+            raise ValueError("an answer needs at least one citation")
+        if self.status != "answered" and self.citations:
+            raise ValueError("abstentions and errors never show sources")
+        return self
+
+
+class ChatTurn(BaseModel):
+    """One message in the conversation. Assistant turns carry the full answer with its sources."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Literal["user", "assistant"]
+    content: str
+    answer: ChatAnswer | None = None
