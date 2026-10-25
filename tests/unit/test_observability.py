@@ -81,14 +81,6 @@ def test_new_requests_keep_the_session_id() -> None:
     assert second.session_id == "abc" and second.request_id != first.request_id
 
 
-@pytest.fixture
-def restore_app_logger():
-    app_logger = logging.getLogger(LOGGER_NAME)
-    saved = (list(app_logger.handlers), app_logger.propagate, app_logger.level)
-    yield app_logger
-    app_logger.handlers[:], app_logger.propagate, app_logger.level = saved[0], saved[1], saved[2]
-
-
 def test_configure_logging_is_idempotent_and_quiets_document_loggers(restore_app_logger) -> None:
     configure_logging("DEBUG")
     configure_logging("INFO")

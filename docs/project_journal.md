@@ -129,3 +129,91 @@ it, and the same key can be reused with a second model.
 **Tradeoffs:** pypdf flattens table columns into space-separated lines, so tables arrive as rows of text
 rather than cells. Good enough for retrieval and for the model to read; a layout-aware extractor would be the
 upgrade path.
+
+## Feature 3 — Complexity classifier and ingestion graph
+
+**Built:** `genai_chatbot/chunking.py` (heading detection, complexity assessment, section building, recursive
+and model-assisted chunking, chunk validation), `genai_chatbot/providers.py` (model construction, error
+classification, the primary/fallback router), the outline prompt in `genai_chatbot/prompts.py`, the LangGraph
+workflow in `genai_chatbot/graphs/ingestion.py`, and test doubles in `tests/support/fake_llm.py` plus a
+fictional five-page annual report with known facts (`tests/support/documents.py`).
+
+**Design decisions**
+
+- *Graph shape:* `extract → classify → (simple) chunk_recursive | (complex) chunk_with_model → validate →
+  index_chunks`. Conditional edges send a complex document back to `chunk_recursive` when the model call
+  fails after failover, when its outline is malformed, or when its chunks fail validation. Nodes emit
+  progress through LangGraph's custom stream, which the app will show in a status box.
+- *Complexity rule, as planned:* more than 20 pages, three or more table-like lines (rows where figures make
+  up at least 40% of the tokens), or a hierarchy of at least two heading levels across three or more strong
+  headings. The assessment records which reasons applied, and the log records only the boolean.
+- *Strong vs. weak headings:* numbered headings ("1.1 Revenue by Segment"), 10-K markers ("PART II",
+  "Item 7") and short ALL-CAPS lines are trusted without a model. Title-case lines with no digits are only
+  candidates, because in a financial report many of them are table labels.
+- *Simple chunking:* sections come from strong headings and may continue across pages, but every chunk stays
+  inside one page so it can be cited with one page number. Sections up to 1,000 characters stay whole;
+  longer ones go through `RecursiveCharacterTextSplitter` (1,000/150, paragraph → line → sentence → word).
+  Pieces under 200 characters (usually a lone heading) are folded into a neighbour when the result still
+  fits, and a heading with no body joins the section that follows it.
+- *Model-assisted chunking is bounded:* the model never rewrites text. It gets at most 400 candidate lines
+  (ID, page, first 100 characters), picks the ones that start sections with a level from 1 to 3, and is told
+  to return at most 150. The app then cuts the page text at those lines, so every chunk is still an exact
+  substring of its page. An ID the model invents makes the whole outline malformed.
+- *Validation before indexing:* every chunk must belong to the document, name a real page, have a unique ID,
+  and match its page's text exactly. Invalid model chunks fall back to the splitter; invalid recursive chunks
+  stop ingestion with an error rather than indexing something that can't be cited.
+- *Failover, exactly once, and only for rate limits:* `LLMRouter` calls the primary model and, on a rate
+  limit, the fallback model once. Credential, request and malformed-output errors never fail over, because
+  retrying elsewhere would hide a configuration problem or double the cost of a bad prompt. SDK retries are
+  off (`max_retries=0`) so a 429 reaches the router at once.
+- *Provider-neutral errors:* `classify_error` walks the exception's cause chain and recognises LangChain's
+  `Model*Error` types, then HTTP status codes and well-known class names. Tested against real exception
+  objects from the Anthropic, OpenAI, Groq and Google SDKs.
+- *Structured output:* Anthropic uses `method="json_schema"` (native structured outputs), because current
+  Claude models reject the forced tool choice LangChain uses by default; other providers keep their default.
+- *Bad credentials during ingestion:* the document is still indexed with the splitter, and the user gets a
+  notice that names the route ("the API key for the primary model") without any provider detail, since
+  questions will fail the same way until the key is fixed.
+
+**Prompt notes**
+
+- Candidates are listed as `id | page | text` lines rather than JSON objects, which keeps the input compact
+  (an estimated 25 tokens per candidate, so about 10k tokens at the 400-candidate cap).
+- v2 added the explicit ceiling of 150 sections after estimating output size: roughly 14 tokens per returned
+  heading, so an unbounded answer on a long report could run past the request timeout.
+- The system prompt says the candidate text is document data and any instructions in it should be ignored;
+  values are inserted after templating, so braces in a PDF can't break or inject into the prompt.
+
+**Challenges and fixes**
+
+- The splitter emitted a lone heading as its own chunk whenever the next paragraph was too long to merge;
+  `_split` now locates each piece in the source text and folds small pieces into a neighbour.
+- A test fixture with templated appendix pages ("Appendix 7: Store Profile 7") had its first two lines
+  stripped as running headers, because header detection ignores digits. That behaviour is right for real
+  running headers, so the fixture now uses distinct text per page; the risk for real reports is noted below.
+- `configure_logging` (called by the app in AppTests) left propagation off for later tests; the logger reset
+  is now an autouse fixture in `tests/conftest.py`, with an `app_logs` fixture for asserting on log records.
+- `fallback_reason` was missing from the logging allowlist, so the reason a document fell back was silently
+  dropped from logs; added it, with a test.
+
+**Tests:** 180 passed (111 new: 44 chunking, 47 provider and routing, 3 prompt, 17 ingestion graph
+integration); coverage 100% of `genai_chatbot/`. `ruff check` and `ruff format --check` clean.
+
+**Gate**
+
+- Simple and complex routing: short prose stays simple and never calls a model; table-like content, section
+  hierarchy and more than 20 pages are each complex, and the 20/21-page boundary is tested.
+- Preserved page metadata: every chunk is checked to be an exact substring of its page, with the right
+  filename, document ID and page, across a 24-page report, for both strategies.
+- Malformed model output: unknown heading IDs and unparseable output both fall back to the splitter with
+  reason `malformed_output`, without trying the fallback model.
+- Rate-limit routing: a rate-limited primary hands the outline call to the fallback exactly once (logged
+  with `fallback_used=true`); other errors never fail over.
+- Deterministic fallback: when both models are rate limited, or credentials are bad, or there is no model,
+  the chunks equal the splitter's output.
+
+**Tradeoffs:** model-assisted chunking adds one model call (an estimated 10k input tokens at the candidate cap)
+and some seconds to each complex upload. Header removal ignores digits, so a line that repeats on most pages with
+only a number changing ("Store 7", "Store 8") is treated as a running header; real annual reports rarely
+open most pages that way. Recursive overlap applies at the separator level, so paragraphs that fill a chunk
+exactly don't overlap the next one.

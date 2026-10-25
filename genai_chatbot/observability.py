@@ -24,6 +24,7 @@ SAFE_FIELDS = frozenset(
         "complex",
         "duration_ms",
         "error_kind",
+        "fallback_reason",
         "fallback_used",
         "model",
         "outcome",
