@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from streamlit.testing.v1 import AppTest
 
 import app
 from genai_chatbot.graphs.ingestion import IngestionError
+from genai_chatbot.graphs.qa import UNSUPPORTED
 from genai_chatbot.providers import LLMRouter
-from genai_chatbot.schemas import OutlineHeading, SectionOutline
+from genai_chatbot.schemas import AnswerDraft, OutlineHeading, QueryPlan, SectionOutline
 from genai_chatbot.vector_store import get_client
-from tests.support.fake_llm import always, bad_credentials, make_router
+from tests.support import heuristic_llm
+from tests.support.fake_llm import Script, always, bad_credentials, make_router, rate_limited
 from tests.support.paths import PROJECT_ROOT
 from tests.support.pdfs import make_image_only_pdf, make_pdf
 
 APP_PATH = str(PROJECT_ROOT / "app.py")
 FIRST_HEADING = SectionOutline(headings=[OutlineHeading(candidate_id="h1", level=1)])
+TEA_PDF = make_pdf(["Harbor Tea Company employed 85 people in 2024."])
+_ESCAPE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|>~<$])")
 
 
 def run_app(router) -> None:
@@ -38,6 +44,21 @@ def upload(at: AppTest, filename: str, data: bytes) -> AppTest:
 def collections_for(at: AppTest) -> set[str]:
     prefix = f"pdfchat-{at.session_state.session_id}-"
     return {c.name for c in get_client().list_collections() if c.name.startswith(prefix)}
+
+
+def ask(at: AppTest, question: str) -> AppTest:
+    at.chat_input[0].set_value(question)
+    return at.run()
+
+
+def shown(markdown: str) -> str:
+    """Markdown source as the reader sees it, without the escapes that keep it literal."""
+    return _ESCAPE.sub(r"\1", markdown)
+
+
+def chatting_about_northwind(northwind_pdf: bytes, router: LLMRouter | None = None) -> AppTest:
+    at = start_app(router or heuristic_llm.heuristic_router())
+    return upload(at, "northwind.pdf", northwind_pdf)
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +97,7 @@ def test_uploading_a_pdf_reads_and_indexes_it(northwind_pdf: bytes) -> None:
     upload(at, "northwind.pdf", northwind_pdf)
 
     assert not at.exception and not at.error
-    assert "northwind.pdf** is ready: 5 pages read." in at.success[0].value
+    assert shown(at.success[0].value) == "**northwind.pdf** is ready: 5 pages read."
     index = at.session_state.index
     assert index.count() > 0
     assert collections_for(at) == {index.name}
@@ -92,7 +113,7 @@ def test_reruns_do_not_process_the_same_upload_again() -> None:
     at.run()
 
     assert at.session_state.index is index and not index.is_deleted
-    assert at.caption[-1].value == "1 page(s) had no selectable text and will be skipped."
+    assert "1 page(s) had no selectable text and will be skipped." in [c.value for c in at.caption]
 
 
 def test_upload_problems_are_explained_and_leave_no_index() -> None:
@@ -193,3 +214,124 @@ def test_two_browser_sessions_keep_separate_indexes(northwind_pdf: bytes) -> Non
     assert collections_for(mine) == set()
     assert theirs.session_state.index.count() > 0
     assert collections_for(theirs) == {theirs.session_state.index.name}
+
+
+def test_questions_wait_for_a_document() -> None:
+    at = start_app()
+
+    (chat,) = at.chat_input
+    assert chat.proto.disabled and chat.placeholder == app.NO_DOCUMENT_PLACEHOLDER
+
+
+def test_a_question_gets_an_answer_with_its_sources(northwind_pdf: bytes) -> None:
+    at = chatting_about_northwind(northwind_pdf)
+    assert not at.chat_input[0].proto.disabled
+    assert app.EXAMPLES in [c.value for c in at.caption]
+
+    ask(at, "How many people did Northwind employ?")
+
+    assert not at.exception
+    user, assistant = at.chat_message
+    assert (user.name, shown(user.markdown[0].value)) == ("user", "How many people did Northwind employ?")
+    answer, heading, source = (shown(m.value) for m in assistant.markdown)
+    assert "2,340 people" in answer and answer.endswith("[1]")
+    assert heading == "**Sources**"
+    assert source == "**[1]** northwind.pdf, page 3"
+    assert assistant.caption[0].value.startswith("“Northwind employed 2,340 people")
+    assert not assistant.status, "the progress indicator gives way to the answer"
+    assert app.EXAMPLES not in [c.value for c in at.caption]
+
+
+def test_follow_up_questions_build_on_the_conversation(northwind_pdf: bytes) -> None:
+    at = chatting_about_northwind(northwind_pdf)
+    ask(at, "How many people did Northwind employ?")
+
+    ask(at, "And how many retail stores did it operate?")
+
+    assert [m.name for m in at.chat_message] == ["user", "assistant", "user", "assistant"]
+    latest = at.chat_message[3]
+    assert "186 retail stores" in latest.markdown[0].value
+    assert shown(latest.markdown[2].value) == "**[1]** northwind.pdf, page 3"
+    assert len(at.session_state.conversation.history()) == 4
+
+
+def test_summaries_and_comparisons_keep_their_format(northwind_pdf: bytes) -> None:
+    at = chatting_about_northwind(northwind_pdf)
+
+    ask(at, "Summarize the key facts")
+    summary = at.chat_message[1].markdown[0].value
+    assert summary.startswith("- ") and summary.count("\n- ") >= 2
+
+    ask(at, "Compare revenue by segment in a table")
+    table = at.chat_message[3].markdown[0].value.splitlines()
+    assert table[0] == "| Item | Figures | Source |"
+    assert table[2].startswith("| Retail stores | \\$ 251.4"), "dollar signs are not read as math"
+
+
+def test_unsupported_questions_get_a_plain_answer_without_sources(northwind_pdf: bytes) -> None:
+    at = chatting_about_northwind(northwind_pdf)
+
+    ask(at, "What is the capital of France?")
+
+    assistant = at.chat_message[1]
+    assert [i.value for i in assistant.info] == [UNSUPPORTED]
+    assert not assistant.markdown
+
+
+def test_a_failed_answer_explains_the_problem_without_sources(northwind_pdf: bytes) -> None:
+    script = Script(
+        {SectionOutline: heuristic_llm.outline, QueryPlan: heuristic_llm.plan, AnswerDraft: rate_limited()}
+    )
+    at = chatting_about_northwind(northwind_pdf, make_router(script)[0])
+
+    ask(at, "How many people did Northwind employ?")
+
+    assistant = at.chat_message[1]
+    assert "too many requests" in assistant.warning[0].value
+    assert not assistant.markdown
+    assert not at.chat_input[0].proto.disabled, "the next question can be asked"
+
+
+def test_reset_clears_the_conversation(northwind_pdf: bytes) -> None:
+    at = chatting_about_northwind(northwind_pdf)
+    ask(at, "How many people did Northwind employ?")
+    conversation = at.session_state.conversation
+
+    at.sidebar.button[0].click()
+    at.run()
+
+    assert at.session_state.conversation is None and conversation.history() == []
+    assert not at.chat_message
+    assert at.chat_input[0].proto.disabled
+
+
+def test_a_new_document_starts_a_new_conversation(northwind_pdf: bytes) -> None:
+    at = chatting_about_northwind(northwind_pdf)
+    ask(at, "How many people did Northwind employ?")
+    first = at.session_state.conversation
+
+    upload(at, "tea.pdf", TEA_PDF)
+    assert not at.chat_message and first.history() == []
+
+    ask(at, "How many people did Harbor Tea employ?")
+    assistant = at.chat_message[1]
+    assert "85 people" in assistant.markdown[0].value
+    assert shown(assistant.markdown[2].value) == "**[1]** tea.pdf, page 1"
+
+
+def test_answers_keep_formatting_but_lose_links_images_and_math() -> None:
+    text = (
+        "Revenue was $412.6 million [1] ![chart](https://example.com/c.png) [site](https://example.com) ~5%\n"
+        "![pixel][r]\n[r]: https://example.com/p.png"
+    )
+
+    assert app.answer_markdown(text) == ("Revenue was \\$412.6 million [1] chart site \\~5%\n![pixel][r]\n")
+
+
+def test_user_and_document_text_is_shown_literally() -> None:
+    text = "Report *v2* [draft](https://example.com) $5 #1 1. ~x~ <b>"
+
+    escaped = app.escape_markdown(text)
+
+    assert shown(escaped) == text
+    assert re.search(r"(?<!\\)[*\[\]$#~<]", escaped) is None, "every special character is escaped"

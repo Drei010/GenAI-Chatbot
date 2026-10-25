@@ -359,3 +359,70 @@ single combined call would be faster but harder to test and to fall back from. S
 can turn a correct but mis-cited answer into an abstention, which is the safer failure. Excerpts are chosen
 lexically, so a paraphrased claim may get a less precise excerpt. Model calls use provider defaults (no
 extended thinking), keeping the app provider-neutral and responsive.
+
+## Feature 6 — Streamlit chat experience and browser tests
+
+**Built:** the chat in `app.py` (question box, answers with sources, progress, abstentions and service
+errors, history, reset and replacement), `tests/support/heuristic_llm.py` (a rule-based stand-in for the
+model), the browser-test app `tests/e2e/fake_llm_app.py`, generated upload files
+(`tests/e2e/make_fixtures.py`), `playwright.config.ts`, `tests/e2e/chat.spec.ts`, and `package.json` /
+`package-lock.json` pinning `@playwright/test` 1.63.0.
+
+**Design decisions**
+
+- *Question box:* `st.chat_input` stays at the bottom of the page. Until a document is ready it is disabled
+  and says "Upload a PDF to start asking questions". `submit_mode="disable"` locks it while a question is
+  being answered, so a second question can't cut the first one off.
+- *Progress:* the assistant's reply starts as a status line fed by the QA graph's progress events
+  ("Reading your question in context…", "Planning the search…", "Searching the document…", "Writing the
+  answer…", "Checking the sources…") and is replaced by the answer. The upload progress box is cleared the
+  same way once the banner reports the outcome; before, a collapsed "Ready" box sat above the banner.
+- *Answers render as Markdown* so bullet lists and tables display, but images, links and link
+  definitions are removed (a PDF could plant them to make the browser fetch a URL), and `$` and `~` are
+  escaped so dollar amounts don't turn into math and tildes into strikethrough. Questions and filenames are
+  escaped completely and always show literally.
+- *Sources:* a bordered box under each answer lists `[n] filename, page N` with the quoted excerpt, all
+  taken from the retrieved passage. Abstentions show as a blue notice and service errors as a yellow
+  warning, and neither shows sources.
+- *History comes from the checkpointer* (`Conversation.history()`), so what the screen shows and what the
+  follow-up rewrite reads are the same record. Reset and replacement delete the conversation thread along
+  with the index.
+- *Browser tests run the real app* with `heuristic_llm` in place of a provider. It reads the same prompts a
+  model gets: it picks headings by their numbering, rewrites "it" in follow-ups from the previous question,
+  plans bullets for "summarize" and a table for "compare", and answers with the passage sentence that
+  shares the rarest words with the question, or abstains when nothing matches. Answers are deterministic
+  and need no API key.
+- *Locators use roles and names* (chat messages are groups named "Chat message from user/assistant", the
+  reset button by its label, the question box by its placeholder), so the tests also check that the main
+  controls are exposed to assistive technology.
+- *Screenshots* of each state go to `test-results/screenshots/<browser>/`: before upload, document ready,
+  answer with sources, follow-up, summary bullets, comparison table, unsupported question, invalid PDF,
+  before and after reset, before and after replacement.
+
+**Challenges and fixes**
+
+- Playwright's `getByText` matches case-insensitive substrings, so waiting for "Sources" matched the page
+  subtitle ("…page-level sources.") before any answer existed. Source checks use exact text inside the
+  latest reply.
+- Knowing when an answer is finished: the question box is disabled while the app works and re-enabled when
+  the run ends, so `ask()` waits for the new question to appear and then for the box to come back.
+- Escaping changed what AppTest reports (`northwind\.pdf`), so app tests compare text with the escapes
+  removed.
+- The stand-in first counted shared words equally, and the company name and year (in every passage)
+  pulled a store-count passage ahead of the revenue one. Words now weigh less the more passages contain
+  them, and sentences wrapped across PDF lines are joined first.
+
+**Tests:** 268 pytest tests passed (10 new app tests: answer with sources, follow-up, bullets and tables,
+unsupported, service error, reset and replacement clearing the conversation, the disabled question box,
+escaping), coverage 100% of `genai_chatbot/` and `app.py`. Browser tests: 6 passed on Chromium in 21 s
+(`npx playwright test --project=chromium`).
+
+**Gate:** Playwright covers upload, a question with its source, a follow-up, summary and table formatting,
+an unsupported question, an invalid PDF, reset and replacement, with screenshots for each state.
+Chromium passed here. Firefox and WebKit couldn't be installed in this environment (the browser download
+hosts are blocked), so they run in CI, which is set up in Feature 7.
+
+**Tradeoffs:** the browser tests don't exercise a real model, by design; real-model quality is covered by
+the evaluation set in Feature 7. Answers appear when complete rather than streaming, because citations are
+checked before anything is shown. Streamlit scrolls inside its main container, so "full page" screenshots
+show the viewport; each one is taken with the newest state in view.

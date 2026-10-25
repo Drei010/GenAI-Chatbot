@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,9 +11,11 @@ import streamlit as st
 
 from genai_chatbot.config import AppSettings, SettingsResult, SetupIssue, load_settings
 from genai_chatbot.graphs.ingestion import IngestionError, build_ingestion_graph, ingest
+from genai_chatbot.graphs.qa import MAX_QUESTION_CHARS, Conversation
 from genai_chatbot.observability import Correlation, configure_logging, log_stage, new_id
 from genai_chatbot.pdf_processing import PDFProcessingError, document_fingerprint
 from genai_chatbot.providers import LLMRouter, build_router
+from genai_chatbot.schemas import ChatAnswer, ChatTurn, Citation
 from genai_chatbot.vector_store import DocumentIndex, warm_up
 
 APP_TITLE = "PDF Knowledge Chatbot"
@@ -21,6 +24,32 @@ RouterFactory = Callable[[AppSettings], LLMRouter]
 
 NO_PASSAGES = "This PDF's text couldn't be prepared for questions. Try another copy of the file."
 PREPARE_FAILED = "Something went wrong while preparing this PDF. Please try again."
+ASK_PLACEHOLDER = "Ask a question about the document"
+NO_DOCUMENT_PLACEHOLDER = "Upload a PDF to start asking questions"
+EXAMPLES = (
+    "Try a figure (“What was revenue in the last fiscal year?”), a summary (“Summarize the key facts”) "
+    "or a comparison (“Compare the segments in a table”). Follow-up questions work too."
+)
+
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|>~<$])")
+_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_LINK_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:.*$", re.MULTILINE)
+
+
+def escape_markdown(text: str) -> str:
+    """Show document or user text literally: no formatting, links, or math from its characters."""
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", text)
+
+
+def answer_markdown(text: str) -> str:
+    """Keep the answer's lists, tables and emphasis, but drop images and links (text planted in a PDF
+    could make the browser fetch a URL) and keep dollar signs from being read as math."""
+    text = _IMAGE.sub(r"\1", text)
+    text = _LINK.sub(r"\1", text)
+    text = _LINK_DEFINITION.sub("", text)
+    return text.replace("$", r"\$").replace("~", r"\~")
+
 
 SETUP_HELP = """
 **How to fix it**
@@ -79,6 +108,7 @@ def init_session(settings: AppSettings, router_factory: RouterFactory) -> None:
     state.setdefault("active", None)
     state.setdefault("upload_error", None)
     state.setdefault("index", None)
+    state.setdefault("conversation", None)
     if state.get("router") is None:
         state.router = router_factory(settings)
 
@@ -88,10 +118,13 @@ def correlation() -> Correlation:
 
 
 def clear_document() -> None:
-    """Forget the active document and everything derived from it, including its index."""
+    """Forget the active document and everything derived from it: the chat thread and the index."""
     state = st.session_state
+    if state.get("conversation") is not None:
+        state.conversation.clear()
     if state.get("index") is not None:
         state.index.delete()
+    state.conversation = None
     state.index = None
     state.active = None
     state.upload_error = None
@@ -120,7 +153,9 @@ def process_upload(upload_key: str, filename: str, data: bytes) -> None:
     index = DocumentIndex(state.session_id, document_fingerprint(data))
     graph = build_ingestion_graph(index, state.router, request)
 
-    with st.status(f"Preparing {filename}…", expanded=True) as status:
+    # Progress shows while the file is prepared; the banner in the main area then reports the outcome.
+    slot = st.empty()
+    with slot.status(f"Preparing {escape_markdown(filename)}…", expanded=True):
         progress = st.progress(0.0, text="Reading the PDF…")
 
         def show_progress(event: dict[str, Any]) -> None:
@@ -133,16 +168,24 @@ def process_upload(upload_key: str, filename: str, data: bytes) -> None:
                 index.delete()
                 outcome, kind, message = _upload_failure(exc)
                 details.update(outcome=outcome, error_kind=kind)
-                status.update(label="This file can't be used", state="error", expanded=False)
                 state.upload_error = (upload_key, message)
-                return
-            details.update(
-                page_count=result.page_count, chunk_count=result.chunk_count, strategy=result.strategy
-            )
-        progress.empty()
-        status.update(label=f"Ready: {result.page_count} pages read", state="complete", expanded=False)
+                result = None
+            else:
+                details.update(
+                    page_count=result.page_count, chunk_count=result.chunk_count, strategy=result.strategy
+                )
+    slot.empty()
+    if result is None:
+        return
 
     state.index = index
+    state.conversation = Conversation(
+        index,
+        state.router,
+        session_id=state.session_id,
+        filename=result.filename,
+        page_count=result.page_count,
+    )
     state.active = ActiveDocument(
         upload_key=upload_key,
         document_id=result.document_id,
@@ -182,7 +225,7 @@ def render_sidebar() -> None:
 
     active: ActiveDocument | None = st.session_state.active
     if active:
-        details.markdown(f"**{active.filename}**  \n{active.page_count} pages")
+        details.markdown(f"**{escape_markdown(active.filename)}**  \n{active.page_count} pages")
     controls.button(
         "Reset chat and document",
         on_click=reset_session,
@@ -192,20 +235,76 @@ def render_sidebar() -> None:
     )
 
 
+def render_sources(citations: Sequence[Citation]) -> None:
+    with st.container(border=True):
+        st.markdown("**Sources**")
+        for citation in citations:
+            st.markdown(
+                f"**[{citation.number}]** {escape_markdown(citation.filename)}, page {citation.page_number}"
+            )
+            st.caption(f"“{escape_markdown(citation.excerpt)}”")
+
+
+def render_answer(answer: ChatAnswer) -> None:
+    if answer.status == "answered":
+        st.markdown(answer_markdown(answer.text))
+        render_sources(answer.citations)
+    elif answer.status == "unsupported":
+        st.info(answer.text, icon="🔎")
+    else:
+        st.warning(answer.text, icon="⚠️")
+
+
+def render_turn(turn: ChatTurn) -> None:
+    with st.chat_message(turn.role):
+        if turn.answer is not None:
+            render_answer(turn.answer)
+        else:
+            st.markdown(escape_markdown(turn.content))
+
+
+def answer_question(conversation: Conversation, question: str) -> None:
+    """Show the question, then progress while the answer is worked out, then the answer."""
+    render_turn(ChatTurn(role="user", content=question))
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        with placeholder.status("Working on your question…") as status:
+            answer = conversation.ask(
+                question, on_progress=lambda event: status.update(label=event["message"])
+            )
+        placeholder.empty()
+        render_answer(answer)
+
+
 def render_main_area() -> None:
     failed = st.session_state.upload_error
+    active: ActiveDocument | None = st.session_state.active
+    conversation: Conversation | None = st.session_state.conversation
+    question = st.chat_input(
+        ASK_PLACEHOLDER if conversation else NO_DOCUMENT_PLACEHOLDER,
+        max_chars=MAX_QUESTION_CHARS,
+        disabled=conversation is None,
+        submit_mode="disable",
+    )
     if failed:
         st.error(failed[1], icon="🚫")
         return
-    active: ActiveDocument | None = st.session_state.active
-    if active is None:
+    if active is None or conversation is None:
         st.info("Upload a PDF in the sidebar to get started.", icon="📄")
         return
-    st.success(f"**{active.filename}** is ready: {active.page_count} pages read.", icon="✅")
+    st.success(f"**{escape_markdown(active.filename)}** is ready: {active.page_count} pages read.", icon="✅")
     if active.pages_without_text:
         st.caption(f"{active.pages_without_text} page(s) had no selectable text and will be skipped.")
     for notice in active.notices:
         st.warning(notice, icon="⚠️")
+
+    history = conversation.history()
+    if not history and not question:
+        st.caption(EXAMPLES)
+    for turn in history:
+        render_turn(turn)
+    if question:
+        answer_question(conversation, question)
 
 
 def main(

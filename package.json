@@ -1,0 +1,12 @@
+{
+  "name": "pdf-document-chatbot-browser-tests",
+  "private": true,
+  "description": "Browser tests for the PDF Knowledge Chatbot. The app itself is Python; see README.md.",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:chromium": "playwright test --project=chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

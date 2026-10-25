@@ -11,4 +11,11 @@ cp .env.example .env   # then fill in your provider keys
 uv run streamlit run app.py
 ```
 
-Run the tests with `uv run pytest`.
+## Tests
+
+```bash
+uv run pytest                      # unit and integration tests, no provider calls
+npm ci                             # browser tests: install Playwright once
+npx playwright install --with-deps chromium firefox webkit
+npx playwright test                # Chromium, Firefox and WebKit, with a stand-in model
+```

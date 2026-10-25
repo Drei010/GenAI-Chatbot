@@ -29,7 +29,7 @@ Project directives for anyone, human or AI agent, who changes this repository.
 ## Playwright
 
 - Browser tests live in `tests/e2e/` and run against `tests/e2e/fake_llm_app.py`, which swaps in the
-  deterministic fake LLM.
+  deterministic, rule-based stand-in model from `tests/support/heuristic_llm.py`.
 - Setup: `npm ci` then `npx playwright install --with-deps chromium firefox webkit`.
 - Run `npx playwright test` to cover Chromium, Firefox and WebKit.
 
