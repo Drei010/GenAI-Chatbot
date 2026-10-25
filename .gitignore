@@ -1,0 +1,39 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Uploaded or private documents (only the public sample report is tracked)
+uploads/
+*.pdf
+!samples/microsoft_2023_annual_report.pdf
+
+# Vector store data (the app keeps Chroma in memory; this catches accidental persistence)
+chroma/
+.chroma/
+chroma_data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Node and Playwright
+node_modules/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+tests/e2e/fixtures/generated/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

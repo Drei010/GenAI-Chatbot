@@ -1,0 +1,11 @@
+[server]
+# Uploads stay in memory; keep them to a size the in-memory pipeline handles comfortably.
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Users see friendly messages; tracebacks stay in the server log.
+showErrorDetails = "none"
+toolbarMode = "minimal"

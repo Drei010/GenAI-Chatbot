@@ -1,0 +1,58 @@
+[project]
+name = "genai-chatbot"
+version = "0.1.0"
+description = "Streamlit chatbot that answers questions about an uploaded PDF with grounded, cited answers."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "chromadb>=1.0",
+    "langchain>=1.0",
+    "langchain-anthropic>=1.0",
+    "langchain-core>=1.0",
+    "langchain-google-genai>=3.0",
+    "langchain-groq>=1.0",
+    "langchain-openai>=1.0",
+    "langchain-text-splitters>=1.0",
+    "langgraph>=1.0",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pypdf>=5.0",
+    "streamlit>=1.45",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "reportlab>=4.2",
+    "ruff>=0.8",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers -m 'not live_llm and not evaluation'"
+markers = [
+    "live_llm: calls real LLM providers with configured credentials (excluded by default)",
+    "evaluation: retrieval evaluation against the Microsoft sample report (excluded by default)",
+]
+
+[tool.coverage.run]
+source = ["genai_chatbot"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["node_modules"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
