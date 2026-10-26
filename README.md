@@ -1,4 +1,4 @@
-# PDF Knowledge Chatbot
+# GenAI Chatbot
 
 A Streamlit app that answers natural-language questions about an uploaded PDF or Word (.docx) document.
 Every supported answer is followed by its **Sources**: the filename, the 1-based page number (or, for a Word
@@ -14,6 +14,8 @@ the document doesn't support an answer, the app says so instead of guessing.
 
 How it works, and the alternatives considered, are in [docs/architecture.md](docs/architecture.md). The
 build log is in [docs/project_journal.md](docs/project_journal.md).
+
+To access the Deployed site go to: https://genai-chatbot-p010.onrender.com/
 
 ## Requirements
 
