@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: pdf-knowledge-chatbot
+    runtime: python
+    plan: starter
+    buildCommand: uv sync --locked --no-dev
+    startCommand: uv run streamlit run app.py --server.address 0.0.0.0 --server.port $PORT
+    healthCheckPath: /_stcore/health
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: PRIMARY_LLM_PROVIDER
+        sync: false
+      - key: PRIMARY_LLM_MODEL
+        sync: false
+      - key: PRIMARY_LLM_API_KEY
+        sync: false
+      - key: FALLBACK_LLM_PROVIDER
+        sync: false
+      - key: FALLBACK_LLM_MODEL
+        sync: false
+      - key: FALLBACK_LLM_API_KEY
+        sync: false
