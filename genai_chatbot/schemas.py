@@ -137,6 +137,7 @@ AnswerStatus = Literal["answered", "unsupported", "error"]
 
 MAX_SUBQUESTIONS = 4
 HISTORY_MESSAGES = 8
+MAX_HISTORY_TURNS = 100
 
 
 class StandaloneQuestion(BaseModel):
@@ -175,14 +176,26 @@ class QueryPlan(BaseModel):
         return self
 
 
+class AnswerEvidence(BaseModel):
+    """One claim and a verbatim quote from one passage offered as its evidence."""
+
+    claim: str = Field(min_length=1)
+    passage_id: str = Field(pattern=r"^P\d+$")
+    quote: str = Field(min_length=1)
+
+
 class AnswerDraft(BaseModel):
-    """Model output for synthesis: the answer with passage IDs (P1, P2, ...) as citations."""
+    """Model output for synthesis, including exact source text for every cited claim."""
 
     response_style: ResponseStyle = Field(description="The format used for the answer.")
     answer: str = Field(
         description="Markdown answer that cites passages inline in square brackets, for example [P2]."
     )
     citation_ids: list[str] = Field(description="Every passage ID cited in the answer, for example P2.")
+    evidence: list[AnswerEvidence] = Field(
+        description="For every factual sentence, bullet or table row, copy it as claim and give each cited "
+        "passage ID with an exact quote from that passage."
+    )
     status: Literal["supported", "unsupported"] = Field(
         description="supported when the passages answer the question, at least in part; unsupported "
         "when they don't."

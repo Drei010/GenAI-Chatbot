@@ -557,3 +557,38 @@ it records.
 **Tradeoffs:** page numbers for a Word file are all or nothing: one missing break means sections for the
 whole file rather than numbers that might be off. Headers, footers, footnotes, endnotes and comments
 aren't read, and legacy .doc files aren't supported (they would need a reader for the old binary format).
+
+## Audit fix 1 — Claim evidence
+
+**Fixed:** supported answer drafts now include each factual sentence, bullet or table row, the passage IDs
+it cites, and an exact quote from every cited passage. Before display, the app checks that evidence entries
+cover the answer units and every quote is a literal substring of its cited retrieved passage. Missing or
+mismatched evidence produces the existing safe abstention. This stays within one model call.
+
+**Tests:** citation, prompt, schema and QA graph tests → 60 passed. The check establishes traceability, not
+semantic entailment: a model can still pair a claim with a quote that does not logically support it.
+
+## Audit fix 2 — Search-model startup recovery
+
+**Fixed:** if local embedding-model warm-up fails, the app now logs only the exception type and shows a safe
+message with a retry button. A transient failure can recover without restarting the process; exception text
+is never shown in the UI or passed to the content-free logger.
+
+**Tests:** `tests/unit/test_app.py` simulates a failed warm-up followed by success; 29 app tests passed.
+
+## Audit fix 3 — Bounded chat history
+
+**Fixed:** the LangGraph message reducer retains at most the latest 100 user/assistant turn pairs, and the
+checkpointer is compacted after each turn so its older snapshots don't keep growing in memory. The UI
+explains that older turns roll off; follow-up rewriting continues to use the latest eight messages.
+
+**Tests:** `tests/integration/test_qa_graph.py` asks 101 turns and checks the retained boundary, recent
+follow-up context and one-snapshot checkpoint; app and QA graph tests → 59 passed.
+
+## Audit follow-up verification
+
+- `uv run pytest --cov=genai_chatbot --cov=app` → 376 passed, 2 deselected, 100% line and branch coverage.
+- `uv run ruff check .` and `uv run ruff format --check .` passed.
+- Playwright passed 14 scenarios on Chromium and WebKit. Firefox could not launch locally: every scenario
+  stopped before app interaction with `Could not find profile folder`, including an elevated rerun after
+  reinstalling the Playwright Firefox binary.

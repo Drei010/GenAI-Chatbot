@@ -18,7 +18,7 @@ from genai_chatbot.schemas import (
     SectionOutline,
     StandaloneQuestion,
 )
-from tests.support.fake_llm import FakeChatModel, Script, make_router, passages_in
+from tests.support.fake_llm import FakeChatModel, Script, answer_draft, make_router, passages_in
 
 _WORD = re.compile(r"[a-z]+|\d[\d,.]*\d|\d")
 _SENTENCE = re.compile(r"(?:(?<=[a-z%)][.!?])|(?<=\d{4}[.!?]))\s+")
@@ -116,21 +116,11 @@ def answer(messages: list[BaseMessage]) -> AnswerDraft:
             sentence = next((s for s in _sentences(text) if len(s.split()) >= 6), None)
             if sentence:
                 bullets.append(f"- {sentence} [{label}]")
-        return AnswerDraft(
-            response_style="bullets",
-            answer="\n".join(bullets),
-            citation_ids=[b.rsplit("[", 1)[1].rstrip("]") for b in bullets],
-            status="supported",
-        )
+        return answer_draft("\n".join(bullets), passages, style="bullets")
 
     ranked = sorted(passages.items(), key=lambda item: -overlap(item[1]))
     if not ranked or overlap(ranked[0][1]) == 0:
-        return AnswerDraft(
-            response_style="prose",
-            answer="The document doesn't cover this.",
-            citation_ids=[],
-            status="unsupported",
-        )
+        return answer_draft("The document doesn't cover this.", passages, status="unsupported")
     label, text = ranked[0]
 
     if style == "table":
@@ -142,12 +132,10 @@ def answer(messages: list[BaseMessage]) -> AnswerDraft:
                 figures = " · ".join(f.strip() for f in re.findall(r"\$?\s?\d[\d,.]*%?", row[len(name) :]))
                 body.append(f"| {name} | {figures} | [{label}] |")
             table = "| Item | Figures | Source |\n|---|---|---|\n" + "\n".join(body)
-            return AnswerDraft(response_style="table", answer=table, citation_ids=[label], status="supported")
+            return answer_draft(table, passages, style="table")
 
     best = max(_sentences(text), key=overlap)
-    return AnswerDraft(
-        response_style="prose", answer=f"{best} [{label}]", citation_ids=[label], status="supported"
-    )
+    return answer_draft(f"{best} [{label}]", passages)
 
 
 def heuristic_router():

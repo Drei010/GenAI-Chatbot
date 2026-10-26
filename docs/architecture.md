@@ -2,8 +2,8 @@
 
 The PDF Knowledge Chatbot is one Streamlit process. A browser session uploads one PDF or Word (.docx)
 document, which an ingestion workflow turns into indexed passages; each question then runs through a question-answer
-workflow that plans the search, retrieves passages, asks a model for an answer that cites them, and
-checks every citation before anything is shown. Both workflows are LangGraph graphs, model calls go
+workflow that plans the search, retrieves passages, asks a model for an answer with claim-level quotes,
+and checks quotes and citations before anything is shown. Both workflows are LangGraph graphs, model calls go
 through a provider-neutral router with a fallback, and everything a session creates lives in memory.
 
 ```mermaid
@@ -133,19 +133,20 @@ flowchart LR
 3. **retrieve** (a conditional route: direct or decomposed) runs each query against the index, up to four
    passages per query, and drops duplicates by chunk ID and by identical text.
 4. **synthesize** sends the passages as `<passage id="P3" section="…">` blocks without page numbers or
-   filenames, asks for an `AnswerDraft` (answer, response style, cited passage IDs, supported or
-   unsupported), and skips the call when nothing was retrieved.
+   filenames, asks for an `AnswerDraft` with an evidence quote for every cited sentence, bullet or table row,
+   and skips the call when nothing was retrieved.
 5. **validate_citations** turns an unsupported draft into a fixed abstention. For a supported draft, every
-   cited label must be one of the retrieved passages and at least one must be cited, or the reply becomes
-   an abstention that asks the user to rephrase. Valid labels are renumbered `[1]`, `[2]` in order of first
-   use, and each source's filename, page and excerpt are copied from the retrieved chunk.
+   answer unit must have an inline citation and an exact quote from each cited retrieved passage. Missing or
+   mismatched evidence, or an unknown citation ID, becomes an abstention. Valid labels are renumbered `[1]`,
+   `[2]` in order of first use, and each source's filename, page and excerpt are copied from the retrieved
+   chunk. The quote check confirms the quote exists; it does not prove semantic entailment.
 6. **respond** turns any failure into a service message and appends the assistant turn to the
    conversation.
 
 The conversation is stored by LangGraph's `InMemorySaver`, one thread per session and document with a
-random suffix, so a reset or a re-upload of the same file starts clean. The chat history the UI renders
-and the context the follow-up rewrite reads both come from that thread. The checkpointer's serializer only
-revives the app's own Pydantic models.
+random suffix, so a reset or a re-upload of the same file starts clean. The thread keeps the latest 100 turns;
+older turns roll off, and prior checkpointer snapshots are compacted after each turn. Follow-up rewriting
+reads only the latest eight messages. The checkpointer's serializer only revives the app's own Pydantic models.
 
 ### Excerpts
 
@@ -209,8 +210,9 @@ disk except the embedding model cache.
 - **Prompt injection:** document text and questions reach models only inside delimited data blocks, and
   every system prompt says to treat that text as data. Passage tags are sanitized so a document can't
   close its own tag, and values are inserted after templating so braces can't alter a prompt.
-- **Grounding:** the model never supplies source metadata. Citations are passage IDs that must match
-  retrieved passages; filenames, pages, sections and excerpts come from the index.
+- **Grounding:** the model never supplies source metadata. Citation IDs must match retrieved passages and
+  each answer unit must include an exact quote from its cited passage; filenames, pages, sections and
+  excerpts come from the index. The quote check does not establish that the claim follows from the quote.
 - **Rendering:** answers keep Markdown lists and tables, but images, links and link definitions are
   removed (a planted image could make the browser fetch a URL) and `$` and `~` are escaped. Questions and
   filenames are fully escaped. HTML is never enabled.

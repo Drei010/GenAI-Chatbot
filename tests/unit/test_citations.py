@@ -7,12 +7,14 @@ import pytest
 from genai_chatbot.citations import (
     EXCERPT_CHARS,
     CitationError,
+    answer_claims,
     cited_labels,
     passage_labels,
     resolve_citations,
     select_excerpt,
+    validate_answer_evidence,
 )
-from genai_chatbot.schemas import RetrievedPassage
+from genai_chatbot.schemas import AnswerEvidence, RetrievedPassage
 from tests.support.documents import REPORT_PAGES
 
 PAGE_2 = "\n".join(REPORT_PAGES[2])
@@ -84,6 +86,51 @@ def test_answers_citing_nothing_or_unknown_passages_are_rejected(passages):
         resolve_citations("Revenue was $412.6 million.", [], passages)
     with pytest.raises(CitationError, match="1 cited label"):
         resolve_citations("Revenue was $412.6 million [P3].", [], passages)
+
+
+def test_answer_claims_cover_sentences_bullets_and_table_rows():
+    answer = (
+        "Revenue was $412.6 million [P1].\n"
+        "- Operating income was $58.3 million [P1].\n"
+        "| Item | Figures | Source |\n|---|---|---|\n| Revenue | $412.6 million | [P1] |"
+    )
+
+    assert answer_claims(answer) == [
+        "Revenue was $412.6 million [P1].",
+        "- Operating income was $58.3 million [P1].",
+        "| Revenue | $412.6 million | [P1] |",
+    ]
+
+
+def test_every_claim_requires_an_exact_quote_from_each_cited_passage():
+    source = passage("c-1", 1, "Revenue was $412.6 million. Operating income was $58.3 million.")
+    passages = passage_labels([source])
+    claim = "Revenue was $412.6 million [P1]."
+
+    validate_answer_evidence(
+        claim,
+        [AnswerEvidence(claim=claim, passage_id="P1", quote="Revenue was $412.6 million.")],
+        passages,
+    )
+
+    with pytest.raises(CitationError, match="missing or does not match"):
+        validate_answer_evidence(
+            claim,
+            [
+                AnswerEvidence(
+                    claim="Revenue rose [P1].", passage_id="P1", quote="Revenue was $412.6 million."
+                )
+            ],
+            passages,
+        )
+    with pytest.raises(CitationError, match="not copied"):
+        validate_answer_evidence(
+            claim,
+            [AnswerEvidence(claim=claim, passage_id="P1", quote="Revenue was $999 million.")],
+            passages,
+        )
+    with pytest.raises(CitationError, match="no inline citation"):
+        validate_answer_evidence("Revenue rose.", [], passages)
 
 
 def test_the_excerpt_is_the_sentence_that_supports_the_claim(passages):

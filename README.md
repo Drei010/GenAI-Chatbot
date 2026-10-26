@@ -5,7 +5,7 @@ Every supported answer is followed by its **Sources**: the filename, the 1-based
 file that doesn't record its page breaks, the section) and a short excerpt copied from the document. When
 the document doesn't support an answer, the app says so instead of guessing.
 
-- Ask follow-up questions; the last eight messages give them context.
+- Ask follow-up questions; the last eight messages give them context. The chat keeps the latest 100 turns.
 - Compound questions are split into up to four searches; comparisons come back as tables with a source per
   row, and summaries as cited bullet points.
 - Financial answers keep the document's units and periods and keep fiscal and calendar years apart.
@@ -85,8 +85,9 @@ uv run streamlit run app.py
 ```
 
 Open http://localhost:8501, upload a PDF or Word (.docx) file in the sidebar, wait for "is ready", and ask
-a question. Use
-**Reset chat and document** to start over; uploading a different file replaces the document and its chat.
+a question. The chat keeps up to 100 turns per document; older turns roll off. Use **Reset chat and document**
+to start over; uploading a different file replaces the document and its chat. If the local embedding model
+cannot load, the app shows a retry action.
 
 ## Sample document
 
@@ -182,8 +183,8 @@ artifacts. Live-model tests are excluded.
 
 ## Privacy and data handling
 
-- The document, its chunks and embeddings, and the chat stay in server memory for the browser session and are
-  dropped on reset, replacement, or when the session ends. Nothing is written to disk except the
+- The document, its chunks and embeddings, and up to 100 chat turns stay in server memory for the browser
+  session and are dropped on reset, replacement, or when the session ends. Nothing is written to disk except the
   embedding model cache.
 - Embeddings are computed locally. The question and the retrieved excerpts (up to four passages per
   search) are sent to the configured model provider. For complex documents (long, with tables, or with
@@ -232,6 +233,8 @@ docs/project_journal.md      Per-feature build log
 - Every source cites a single page; a passage that continues across a page break is split at the break.
 - Answers appear when they are complete (not streamed), because citations are checked first.
 - Excerpts are chosen by word and number overlap, so a paraphrased claim may get a less precise excerpt.
+- The app checks that each factual answer unit has an exact quote from a cited passage, but a quote existing
+  in the passage does not prove that it logically supports the claim.
 - Retrieval uses embeddings only (no keyword search), so a question worded very differently from the
   document ("cut jobs" for "reduced our workforce") can miss the right passage.
 - All sessions share one server process, so memory grows with the number of open sessions and documents.

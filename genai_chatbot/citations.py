@@ -10,7 +10,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from genai_chatbot.schemas import Citation, RetrievedPassage
+from genai_chatbot.schemas import AnswerEvidence, Citation, RetrievedPassage
 
 EXCERPT_CHARS = 240
 SHORT_EXCERPT_CHARS = 60
@@ -67,6 +67,40 @@ def cited_labels(answer: str, citation_ids: Sequence[str]) -> list[str]:
         if label and label not in labels:
             labels.append(label)
     return labels
+
+
+def answer_claims(answer: str) -> list[str]:
+    """Factual answer units that need evidence: sentences, bullets and table rows."""
+    claims: list[str] = []
+    for line in answer.splitlines():
+        line = line.strip()
+        if not line or (line.startswith("|") and re.fullmatch(r"\|[\s|:-]+\|", line)):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if line.startswith("|") and cells[-1].lower() == "source" and not MARKER.search(line):
+            continue
+        claims.extend([line] if line.startswith("|") else _SENTENCE_END.split(line))
+    return [claim.strip() for claim in claims if claim.strip()]
+
+
+def validate_answer_evidence(
+    answer: str, evidence: Sequence[AnswerEvidence], passages: Mapping[str, RetrievedPassage]
+) -> None:
+    """Require each factual answer unit to cite passage text copied exactly from that passage."""
+    required: set[tuple[str, str]] = set()
+    for claim in answer_claims(answer):
+        labels = [_normalize(label) for marker in MARKER.finditer(claim) for label in _ids_in(marker)]
+        if not labels:
+            raise CitationError("a factual claim has no inline citation")
+        required.update((" ".join(claim.split()), label) for label in labels)
+
+    supplied = {(" ".join(item.claim.split()), item.passage_id.upper()) for item in evidence}
+    if supplied != required:
+        raise CitationError("claim evidence is missing or does not match the answer")
+    for item in evidence:
+        passage = passages.get(item.passage_id.upper())
+        if passage is None or item.quote.strip() not in passage.text:
+            raise CitationError("an evidence quote is not copied from its cited passage")
 
 
 def _segments(answer: str) -> list[str]:

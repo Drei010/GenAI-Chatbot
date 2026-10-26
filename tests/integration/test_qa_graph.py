@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from langchain_core.exceptions import OutputParserException
 
 from genai_chatbot.chunking import recursive_chunks
+from genai_chatbot.citations import answer_claims
 from genai_chatbot.graphs.qa import (
     MAX_QUESTION_CHARS,
     UNEXPECTED,
@@ -16,7 +19,15 @@ from genai_chatbot.graphs.qa import (
 )
 from genai_chatbot.prompts import ANSWER_SYSTEM
 from genai_chatbot.providers import ErrorKind, ProviderError
-from genai_chatbot.schemas import AnswerDraft, Citation, QueryPlan, RetrievedPassage, StandaloneQuestion
+from genai_chatbot.schemas import (
+    MAX_HISTORY_TURNS,
+    AnswerDraft,
+    AnswerEvidence,
+    Citation,
+    QueryPlan,
+    RetrievedPassage,
+    StandaloneQuestion,
+)
 from genai_chatbot.vector_store import DocumentIndex
 from tests.support.fake_llm import (
     Script,
@@ -389,7 +400,11 @@ def test_an_unusable_follow_up_rewrite_falls_back_to_the_question(index):
 def test_malformed_answers_are_reported_and_never_shown(index):
     router, _, fallback = make_router(
         Script({QueryPlan: [plan("Northwind revenue")], AnswerDraft: OutputParserException("prose")}),
-        always(AnswerDraft(response_style="prose", answer="x [P1]", citation_ids=["P1"], status="supported")),
+        always(
+            AnswerDraft(
+                response_style="prose", answer="x [P1]", citation_ids=["P1"], evidence=[], status="supported"
+            )
+        ),
     )
 
     answer = converse(index, router).ask("What was revenue?")
@@ -403,10 +418,22 @@ def test_malformed_answers_are_reported_and_never_shown(index):
 
 
 def answer_with(text: str, ids: list[str], status: str = "supported") -> Script:
+    def respond(messages):
+        retrieved = passages_in(messages)
+        evidence = [
+            AnswerEvidence(claim=claim, passage_id=label, quote=retrieved[label])
+            for claim in answer_claims(text)
+            for label in re.findall(r"\[\s*(P\d+)", claim, re.IGNORECASE)
+            if label in retrieved
+        ]
+        return AnswerDraft(
+            response_style="prose", answer=text, citation_ids=ids, evidence=evidence, status=status
+        )
+
     return Script(
         {
             QueryPlan: [plan("Northwind revenue")],
-            AnswerDraft: [AnswerDraft(response_style="prose", answer=text, citation_ids=ids, status=status)],
+            AnswerDraft: respond,
         }
     )
 
@@ -430,12 +457,30 @@ def test_answers_with_unverifiable_citations_become_abstentions(index, app_logs,
     assert validate["outcome"] == "invalid"
 
 
-def test_citations_listed_but_not_written_inline_still_resolve(index):
+def test_claims_without_inline_citations_are_rejected_even_if_ids_are_listed(index):
     router, _, _ = make_router(answer_with("Revenue was $412.6 million.", ["p1"]))
 
     answer = converse(index, router).ask("What was revenue?")
 
-    assert answer.status == "answered" and len(answer.citations) == 1
+    assert (answer.status, answer.text, answer.citations) == ("unsupported", UNVERIFIED, [])
+
+
+def test_claim_with_a_quote_not_in_the_retrieved_passage_is_rejected(index):
+    def respond(messages):
+        claim = "Revenue was $412.6 million [P1]."
+        return AnswerDraft(
+            response_style="prose",
+            answer=claim,
+            citation_ids=["P1"],
+            evidence=[AnswerEvidence(claim=claim, passage_id="P1", quote="Revenue was $999 million.")],
+            status="supported",
+        )
+
+    router, _, _ = make_router(Script({QueryPlan: [plan("Northwind revenue")], AnswerDraft: respond}))
+
+    answer = converse(index, router).ask("What was revenue?")
+
+    assert (answer.status, answer.text, answer.citations) == ("unsupported", UNVERIFIED, [])
 
 
 def test_unsupported_questions_get_a_plain_abstention_without_sources(index):
@@ -502,6 +547,32 @@ def test_conversations_have_their_own_threads_and_can_be_cleared(index):
     mine.clear()
 
     assert mine.history() == []
+
+
+def test_conversation_keeps_only_the_latest_100_turns_and_recent_context(index):
+    script = Script(
+        {
+            StandaloneQuestion: StandaloneQuestion(question="Northwind employee count"),
+            QueryPlan: plan("Northwind employee count"),
+            AnswerDraft: cite("Northwind employed 2,340 people {e}.", e="2,340"),
+        }
+    )
+    router, model, _ = make_router(script)
+    checkpointer = new_checkpointer()
+    conversation = converse(index, router, checkpointer=checkpointer)
+
+    for turn in range(MAX_HISTORY_TURNS + 1):
+        conversation.ask(f"Question {turn}")
+
+    history = conversation.history()
+
+    assert len(history) == MAX_HISTORY_TURNS * 2
+    assert history[0].role == "user" and history[0].content == "Question 1"
+    assert history[-2].content == f"Question {MAX_HISTORY_TURNS}"
+    assert len(checkpointer.storage[conversation.thread_id][""]) == 1
+    last_context = model.calls_for(StandaloneQuestion)[-1][-1].content
+    assert last_context.count("User: ") == 4
+    assert last_context.count("Assistant: ") == 4
 
 
 def test_unexpected_errors_become_a_generic_message(index, monkeypatch, app_logs):

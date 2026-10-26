@@ -97,6 +97,35 @@ def test_app_starts_with_valid_settings() -> None:
     assert at.info[0].value == "Upload a PDF or Word file in the sidebar to get started."
 
 
+def test_embedding_model_failure_shows_a_safe_retry_and_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def fail_twice() -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise RuntimeError("private download detail")
+
+    monkeypatch.setattr(app, "warm_up", fail_twice)
+    app.prepare_search_model.clear()
+    try:
+        at = start_app()
+
+        assert not at.exception
+        assert [error.value for error in at.error] == [app.SEARCH_MODEL_FAILED]
+        assert "private download detail" not in " ".join(element.value for element in at.markdown)
+        assert at.button[0].label == "Retry local model"
+
+        at.button[0].click()
+        at.run()
+
+        assert not at.exception and not at.error
+        assert at.info[0].value == "Upload a PDF or Word file in the sidebar to get started."
+        assert calls == 3
+    finally:
+        app.prepare_search_model.clear()
+
+
 def test_uploading_a_pdf_reads_and_indexes_it(northwind_pdf: bytes) -> None:
     router, primary, _ = make_router(always(FIRST_HEADING))
     at = start_app(router)
@@ -105,6 +134,7 @@ def test_uploading_a_pdf_reads_and_indexes_it(northwind_pdf: bytes) -> None:
 
     assert not at.exception and not at.error
     assert shown(at.success[0].value) == "**northwind.pdf** is ready: 5 pages read."
+    assert "This chat keeps the latest 100 turns; older turns roll off." in [c.value for c in at.caption]
     assert shown(at.sidebar.markdown[0].value) == "**northwind.\u200bpdf**  \n5 pages"
     index = at.session_state.index
     assert index.count() > 0

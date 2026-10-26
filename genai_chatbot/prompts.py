@@ -144,6 +144,9 @@ Citations
 - Put the IDs of the supporting passages in square brackets after every sentence, bullet or table row \
 that states a fact, for example [P2] or [P1, P3].
 - Use only the passage IDs given, and list every ID you cite in citation_ids.
+- For each factual sentence, bullet or table row, add one evidence entry for every cited passage. Copy the
+  full answer unit, including its inline citation, into claim; copy an exact, contiguous quote from that
+  passage into quote. Do not paraphrase or combine separate parts of the passage in a quote.
 - Don't add page numbers, file names or a list of sources. The app shows the sources.
 
 Numbers and periods

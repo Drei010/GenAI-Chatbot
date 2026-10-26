@@ -13,9 +13,9 @@ from genai_chatbot.config import AppSettings, SettingsResult, SetupIssue, load_s
 from genai_chatbot.documents import DocumentError, document_fingerprint
 from genai_chatbot.graphs.ingestion import IngestionError, build_ingestion_graph, ingest
 from genai_chatbot.graphs.qa import MAX_QUESTION_CHARS, Conversation
-from genai_chatbot.observability import Correlation, configure_logging, log_stage, new_id
+from genai_chatbot.observability import Correlation, configure_logging, log_event, log_stage, new_id
 from genai_chatbot.providers import LLMRouter, build_router
-from genai_chatbot.schemas import ChatAnswer, ChatTurn, Citation
+from genai_chatbot.schemas import MAX_HISTORY_TURNS, ChatAnswer, ChatTurn, Citation
 from genai_chatbot.vector_store import DocumentIndex, warm_up
 
 APP_TITLE = "PDF Knowledge Chatbot"
@@ -24,6 +24,9 @@ RouterFactory = Callable[[AppSettings], LLMRouter]
 
 NO_PASSAGES = "This document's text couldn't be prepared for questions. Try another copy of the file."
 PREPARE_FAILED = "Something went wrong while preparing this document. Please try again."
+SEARCH_MODEL_FAILED = (
+    "The local search model couldn't be loaded. Check the network or model cache, then retry."
+)
 ASK_PLACEHOLDER = "Ask a question about the document"
 NO_DOCUMENT_PLACEHOLDER = "Upload a document to start asking questions"
 NO_PAGE_NUMBERS = (
@@ -320,6 +323,7 @@ def render_main_area() -> None:
     else:
         st.success(f"**{name}** is ready.", icon="✅")
         st.caption(NO_PAGE_NUMBERS)
+    st.caption(f"This chat keeps the latest {MAX_HISTORY_TURNS} turns; older turns roll off.")
     if active.pages_without_text:
         st.caption(f"{active.pages_without_text} page(s) had no text to read and will be skipped.")
     for notice in active.notices:
@@ -350,9 +354,21 @@ def main(
         render_setup_message(result.issues)
         st.stop()
     configure_logging(result.settings.log_level)
-    prepare_search_model()
-
     init_session(result.settings, router_factory)
+    try:
+        prepare_search_model()
+    except Exception as exc:
+        log_event(
+            "embedding_warmup",
+            correlation(),
+            outcome="error",
+            error_kind=type(exc).__name__,
+        )
+        st.error(SEARCH_MODEL_FAILED)
+        if st.button("Retry local model"):
+            st.rerun()
+        st.stop()
+
     render_sidebar()
     render_main_area()
 

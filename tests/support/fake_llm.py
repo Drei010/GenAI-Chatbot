@@ -10,9 +10,10 @@ from langchain_core.exceptions import ModelAuthenticationError, ModelInvalidRequ
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableLambda
 
+from genai_chatbot.citations import answer_claims
 from genai_chatbot.observability import Correlation
 from genai_chatbot.providers import LLMRouter, ModelEndpoint
-from genai_chatbot.schemas import AnswerDraft, QueryPlan, ResponseStyle
+from genai_chatbot.schemas import AnswerDraft, AnswerEvidence, QueryPlan, ResponseStyle
 
 Responder = Callable[[type, list[BaseMessage]], Any]
 
@@ -116,6 +117,27 @@ def label_for(messages: list[BaseMessage], fact: str) -> str:
     raise AssertionError(f"no retrieved passage contains {fact!r}")
 
 
+def answer_draft(
+    answer: str,
+    passages: dict[str, str],
+    *,
+    style: ResponseStyle = "prose",
+    status: str = "supported",
+) -> AnswerDraft:
+    evidence = [
+        AnswerEvidence(claim=claim, passage_id=label, quote=passages[label])
+        for claim in answer_claims(answer)
+        for label in re.findall(r"\[\s*(P\d+)", claim, re.IGNORECASE)
+    ]
+    return AnswerDraft(
+        response_style=style,
+        answer=answer,
+        citation_ids=list(dict.fromkeys(item.passage_id for item in evidence)),
+        evidence=evidence,
+        status=status,
+    )
+
+
 def plan(*queries: str, style: ResponseStyle = "prose") -> QueryPlan:
     return QueryPlan(decompose=len(queries) > 1, queries=list(queries), response_style=style)
 
@@ -126,11 +148,10 @@ def cite(template: str, style: ResponseStyle = "prose", **facts: str) -> Callabl
 
     def respond(messages: list[BaseMessage]) -> AnswerDraft:
         labels = {name: label_for(messages, fact) for name, fact in facts.items()}
-        return AnswerDraft(
-            response_style=style,
-            answer=template.format(**{name: f"[{label}]" for name, label in labels.items()}),
-            citation_ids=sorted(set(labels.values())),
-            status="supported",
+        return answer_draft(
+            template.format(**{name: f"[{label}]" for name, label in labels.items()}),
+            passages_in(messages),
+            style=style,
         )
 
     return respond

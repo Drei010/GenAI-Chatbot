@@ -11,7 +11,6 @@ message. The conversation lives in an in-memory checkpointer, one thread per ses
 
 from __future__ import annotations
 
-import operator
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Protocol, TypedDict
 
@@ -21,12 +20,13 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from genai_chatbot.citations import CitationError, passage_labels, resolve_citations
+from genai_chatbot.citations import CitationError, passage_labels, resolve_citations, validate_answer_evidence
 from genai_chatbot.observability import Correlation, log_event, log_stage, new_id
 from genai_chatbot.prompts import answer_messages, condense_messages, plan_messages
 from genai_chatbot.providers import LLMRouter, ProviderError
 from genai_chatbot.schemas import (
     HISTORY_MESSAGES,
+    MAX_HISTORY_TURNS,
     AnswerDraft,
     ChatAnswer,
     ChatTurn,
@@ -46,7 +46,15 @@ UNEXPECTED = "Something went wrong while answering. Please try again."
 # Types the checkpointer may rebuild from its stored state; anything else is refused.
 CHECKPOINT_TYPES = [
     ("genai_chatbot.schemas", name)
-    for name in ("AnswerDraft", "ChatAnswer", "ChatTurn", "Citation", "QueryPlan", "RetrievedPassage")
+    for name in (
+        "AnswerDraft",
+        "AnswerEvidence",
+        "ChatAnswer",
+        "ChatTurn",
+        "Citation",
+        "QueryPlan",
+        "RetrievedPassage",
+    )
 ]
 
 
@@ -59,7 +67,7 @@ class PassageSearch(Protocol):
 
 
 class QAState(TypedDict, total=False):
-    messages: Annotated[list[ChatTurn], operator.add]  # the conversation, kept across turns
+    messages: Annotated[list[ChatTurn], _append_history]
     # Everything below describes the current turn and is reset by Conversation.ask.
     question: str
     request_id: str
@@ -70,6 +78,10 @@ class QAState(TypedDict, total=False):
     draft: AnswerDraft | None
     failure: str | None
     answer: ChatAnswer | None
+
+
+def _append_history(previous: list[ChatTurn], new: list[ChatTurn]) -> list[ChatTurn]:
+    return (previous + new)[-(MAX_HISTORY_TURNS * 2) :]
 
 
 def new_checkpointer() -> InMemorySaver:
@@ -196,9 +208,9 @@ def build_qa_graph(
                 answer = ChatAnswer(status="unsupported", text=UNSUPPORTED)
             else:
                 try:
-                    resolved = resolve_citations(
-                        draft.answer, draft.citation_ids, passage_labels(state["passages"])
-                    )
+                    passages_by_label = passage_labels(state["passages"])
+                    validate_answer_evidence(draft.answer, draft.evidence, passages_by_label)
+                    resolved = resolve_citations(draft.answer, draft.citation_ids, passages_by_label)
                 except CitationError:
                     details["outcome"] = "invalid"
                     answer = ChatAnswer(status="unsupported", text=UNVERIFIED)
@@ -318,11 +330,18 @@ class Conversation:
             self.graph.update_state(
                 self.config, {"messages": [ChatTurn(role="assistant", content=answer.text, answer=answer)]}
             )
+            self._compact_history()
             return answer
+        self._compact_history()
         return final["answer"]
 
     def history(self) -> list[ChatTurn]:
         return list(self.graph.get_state(self.config).values.get("messages", []))
+
+    def _compact_history(self) -> None:
+        history = self.history()
+        self._checkpointer.delete_thread(self.thread_id)
+        self.graph.update_state(self.config, {"messages": history})
 
     def clear(self) -> None:
         """Forget the conversation by deleting its checkpointer thread."""
