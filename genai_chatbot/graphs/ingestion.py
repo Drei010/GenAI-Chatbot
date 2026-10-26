@@ -29,7 +29,13 @@ from genai_chatbot.extraction import extract_document
 from genai_chatbot.observability import Correlation, log_stage
 from genai_chatbot.prompts import outline_messages
 from genai_chatbot.providers import ErrorKind, LLMRouter, ProviderError
-from genai_chatbot.schemas import Chunk, ChunkStrategy, ComplexityAssessment, ExtractedDocument, SectionOutline
+from genai_chatbot.schemas import (
+    Chunk,
+    ChunkStrategy,
+    ComplexityAssessment,
+    ExtractedDocument,
+    SectionOutline,
+)
 
 ProgressCallback = Callable[[int, int], None]
 

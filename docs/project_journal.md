@@ -478,9 +478,8 @@ runner (`run_eval.py`) and their tests; `docs/architecture.md`; the full `README
 **Tests:** 296 passed (28 new evaluation tests), coverage 100% of `genai_chatbot/` and `app.py`; ruff clean.
 The two opt-in evaluation tests skip cleanly without the sample PDF. Playwright: 6 passed on Chromium.
 
-**Gate:** the journal and README are complete and the CI configuration is present. Still open: the
-private repository `pdf-document-chatbot-exam` (it has to be created on GitHub before the push), and
-filling the expected pages from the sample PDF.
+**Gate:** the journal and README are complete and the CI configuration is present. Still open: filling the
+expected pages from the sample PDF.
 
 **Tradeoffs:** phrase matching can miss a correct answer worded in an unexpected way; the accepted
 phrasings reduce that, and the report shows every answer for a human check. A page hit is lenient when a

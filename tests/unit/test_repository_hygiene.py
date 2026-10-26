@@ -1,4 +1,4 @@
-"""Guards for the private-repository requirements: no secrets or private documents get tracked."""
+"""Guards that keep secrets and private documents out of version control."""
 
 from __future__ import annotations
 

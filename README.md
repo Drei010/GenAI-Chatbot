@@ -26,7 +26,7 @@ build log is in [docs/project_journal.md](docs/project_journal.md).
 
 ```bash
 git clone <this repository>
-cd pdf-document-chatbot-exam
+cd GenAI-Chatbot
 uv sync
 ```
 
