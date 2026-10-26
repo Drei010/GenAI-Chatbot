@@ -7,6 +7,8 @@
 # Uploaded or private documents (only the public sample report is tracked)
 uploads/
 *.pdf
+*.docx
+*.doc
 !samples/microsoft_2023_annual_report.pdf
 
 # Vector store data (the app keeps Chroma in memory; this catches accidental persistence)

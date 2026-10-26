@@ -15,7 +15,8 @@ Project directives for anyone, human or AI agent, who changes this repository.
 
 - Every module in `genai_chatbot/` needs pytest coverage. Run `uv run pytest --cov=genai_chatbot` before
   committing and don't let coverage drop.
-- Automated tests must be deterministic: generate small PDFs inside the tests and use the fake LLM in
+- Automated tests must be deterministic: generate small PDFs (`tests/support/pdfs.py`) and Word files
+  (`tests/support/docx.py`) inside the tests and use the fake LLM in
   `tests/support/fake_llm.py`. The default test run never calls a real provider; live checks carry the
   `live_llm` marker and run only on request.
 
@@ -51,5 +52,6 @@ Project directives for anyone, human or AI agent, who changes this repository.
 ## Privacy and secrets
 
 - Never commit secrets, `.env`, `.streamlit/secrets.toml`, or uploaded documents.
-- Never log API keys, PDF text, prompts that contain document content, full user questions, or excerpts.
+- Never log API keys, document text, prompts that contain document content, full user questions, or
+  excerpts.
   Use `genai_chatbot.observability`, which only accepts an allowlist of scalar fields.

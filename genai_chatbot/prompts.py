@@ -19,7 +19,7 @@ HISTORY_TURN_CHARS = 600
 
 OUTLINE_SYSTEM = f"""You map the section structure of a document.
 
-You get candidate heading lines extracted from a PDF, each with an ID and a page number. Some are real \
+You get candidate heading lines extracted from a document, each with an ID and a page number. Some are real \
 section headings. Others are table rows, chart or figure labels, running headers, list items, or \
 fragments of sentences.
 
@@ -59,7 +59,7 @@ def outline_messages(
 
 # Follow-up resolution
 
-CONDENSE_SYSTEM = """You rewrite the user's latest message in a conversation about a PDF document as a \
+CONDENSE_SYSTEM = """You rewrite the user's latest message in a conversation about a document as a \
 standalone question.
 
 - Resolve references such as "it", "that year", "the second one" or "what about Azure?" using the \
@@ -99,7 +99,7 @@ def condense_messages(history: Sequence[ChatTurn], question: str) -> list[BaseMe
 
 # Retrieval planning
 
-PLAN_SYSTEM = """You plan searches over one PDF document so that a question about it can be answered.
+PLAN_SYSTEM = """You plan searches over one document so that a question about it can be answered.
 
 Decide how many searches the question needs:
 - One search (decompose = false) when a single passage could hold the answer. Write one query.
@@ -131,8 +131,7 @@ def plan_messages(filename: str, page_count: int, question: str) -> list[BaseMes
 
 # Answer synthesis
 
-ANSWER_SYSTEM = """You answer questions about a PDF document using only the passages provided with each \
-question.
+ANSWER_SYSTEM = """You answer questions about a document using only the passages provided with each question.
 
 Grounding
 - Use only facts stated in the passages. Don't use outside knowledge, and don't guess.

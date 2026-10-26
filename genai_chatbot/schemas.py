@@ -7,23 +7,42 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+class StyledHeading(BaseModel):
+    """A line the document's own formatting marks as a heading (a Word heading style)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    offset: int = Field(ge=0, description="Where the line starts in the page text")
+    level: Literal[1, 2, 3]
+
+
 class PageText(BaseModel):
-    """Cleaned text of one PDF page. `page_number` is 1-based, as printed in a PDF viewer."""
+    """Cleaned text of one page. `page_number` is 1-based, as printed in a PDF viewer.
+
+    For a Word file that doesn't record where its pages break, a page is a part of about a page of
+    text, and its number is never shown (see ExtractedDocument.has_page_numbers).
+    """
 
     model_config = ConfigDict(frozen=True)
 
     page_number: int = Field(ge=1)
     text: str
+    headings: tuple[StyledHeading, ...] = ()
 
 
 class ExtractedDocument(BaseModel):
-    """An uploaded PDF reduced to its pages of text. Lives in memory only."""
+    """An uploaded PDF or Word document reduced to its pages of text. Lives in memory only."""
 
     model_config = ConfigDict(frozen=True)
 
     document_id: str = Field(pattern=r"^[0-9a-f]{64}$", description="SHA-256 of the uploaded bytes")
     filename: str = Field(min_length=1, max_length=255)
     pages: list[PageText] = Field(min_length=1)
+    has_page_numbers: bool = Field(
+        default=True,
+        description="False when the pages are parts of a Word file that doesn't record its page breaks; "
+        "sources then show a section instead of a page number.",
+    )
 
     @model_validator(mode="after")
     def _pages_are_numbered_in_order(self) -> ExtractedDocument:
@@ -180,6 +199,7 @@ class Citation(BaseModel):
     filename: str = Field(min_length=1)
     page_number: int = Field(ge=1)
     excerpt: str = Field(min_length=1)
+    section_title: str | None = None
 
 
 class ChatAnswer(BaseModel):

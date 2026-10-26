@@ -517,3 +517,44 @@ file's metadata names no person.
 
 **Tests:** 297 passed, coverage 100%; ruff clean. The offline evaluation check
 (`pytest -m "evaluation and not live_llm"`) now runs against the sample and passes.
+
+## Word documents
+
+**Asked for:** accept Word files as well as PDFs.
+
+**Built:** `genai_chatbot/extraction.py` recognizes an upload by its content and hands it to the PDF or
+Word reader. `documents.py` holds what both share: `DocumentError` (which replaces `PDFProcessingError`)
+and its messages, the limits, display names and document IDs. `docx_processing.py` reads Word files. Pages
+can carry headings marked by Word styles (`PageText.headings`), a document says whether it has page numbers
+(`ExtractedDocument.has_page_numbers`), and each citation carries its passage's section. The uploader takes
+`.pdf` and `.docx`, the app's wording covers both, and the prompts say "document" instead of "PDF".
+
+- *Reading:* paragraphs in order, each table row as one line (cells joined by `|`), text boxes once, and
+  equations; tracked insertions are kept, while deleted text, hidden text and field codes are skipped.
+  Parsing uses `zipfile` and `defusedxml` (no DTDs), with a 32 MB limit per part checked before inflating.
+- *Headings:* paragraphs with an outline level from their style or formatting (Word's "heading N" and
+  Title styles, and styles based on them) become headings, used instead of guesses from the text.
+- *Pages:* Word files don't store their layout, so pages come from the breaks a file records and are used
+  only when they add up (no page over 6,000 characters, and a count that matches the page count Word
+  saved, or Word's layout marks when no current count is saved). Otherwise the text is packed into parts
+  of about a page that stand in for pages internally, and sources show their section. A page number that
+  might be wrong is never shown.
+- *Problems:* older .doc files, password-protected Word files, damaged files, other ZIP or Office files and
+  files with only pictures each get a plain message.
+
+**Checked with the sample report's Word edition:** read in 0.7 seconds. Word saved a page count of 85,
+but the file holds only 20 inserted page breaks and 2 layout marks (one at the same place as an inserted
+break), so its 22 break-delimited segments don't add up and it is read without page numbers, as 102 parts.
+In the app with the stand-in model it was ready in 13 seconds (411 passages, model-assisted chunking), and
+its sources name sections such as "SUMMARY RESULTS OF OPERATIONS" or "NOTE 8 — BUSINESS COMBINATIONS". A
+passage holding each question's evidence phrase is in the top four search results for the same 10 of 14
+answerable questions as with the PDF edition (a stricter check than the page match above).
+
+**Tests:** 371 passed, coverage 100%, ruff clean. Playwright: 7 tests pass on Chromium; the new one
+uploads a Word file with recorded pages (sources cite page 2) and one without (sources cite the section).
+Test Word files are built from XML snippets; LibreOffice opens them and paginates the two-page fixture as
+it records.
+
+**Tradeoffs:** page numbers for a Word file are all or nothing: one missing break means sections for the
+whole file rather than numbers that might be off. Headers, footers, footnotes, endnotes and comments
+aren't read, and legacy .doc files aren't supported (they would need a reader for the old binary format).

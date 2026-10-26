@@ -19,10 +19,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from genai_chatbot.documents import document_fingerprint
 from genai_chatbot.graphs.ingestion import build_ingestion_graph, ingest
 from genai_chatbot.graphs.qa import Conversation
 from genai_chatbot.observability import Correlation, new_id
-from genai_chatbot.pdf_processing import document_fingerprint
 from genai_chatbot.providers import LLMRouter
 from genai_chatbot.schemas import ChatAnswer, ResponseStyle
 from genai_chatbot.vector_store import DocumentIndex

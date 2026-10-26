@@ -39,6 +39,8 @@ def require_git_checkout() -> None:
         ".streamlit/secrets.toml",
         "uploads/contract.pdf",
         "notes/private-report.pdf",
+        "notes/2023_Annual_Report.docx",
+        "notes/old-minutes.doc",
         "chroma/chroma.sqlite3",
         "test-results/screenshots/chromium/answer.png",
         "playwright-report/index.html",

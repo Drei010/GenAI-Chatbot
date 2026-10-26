@@ -18,7 +18,16 @@ from genai_chatbot.chunking import (
     recursive_chunks,
     validate_chunks,
 )
-from genai_chatbot.schemas import CHUNK_OVERLAP, CHUNK_SIZE, Chunk, OutlineHeading, SectionOutline
+from genai_chatbot.schemas import (
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    Chunk,
+    ExtractedDocument,
+    OutlineHeading,
+    PageText,
+    SectionOutline,
+    StyledHeading,
+)
 from tests.support.documents import document_from_pages
 from tests.support.pdfs import lorem_paragraph
 
@@ -294,6 +303,37 @@ def test_nested_headings_build_a_title_path():
         "1. Financial Highlights",
         "1. Financial Highlights > 1.1 Revenue by Segment",
         "2. Operations",
+    ]
+
+
+def test_headings_marked_by_word_styles_are_used_instead_of_guessed_ones():
+    long_line = (
+        "A whole paragraph that was given a heading style by mistake, which makes it far too long "
+        "for a heading."
+    )
+    page = (
+        f"Our Year in Tea\n{PROSE}\nSHOPS AND GROWTH\n{PROSE}\nPortland Shops\n{PROSE}\n{long_line}\n{PROSE}"
+    )
+    marks = [("Our Year in Tea", 1), ("Portland Shops", 2), (long_line, 2)]
+    document = ExtractedDocument(
+        document_id="b" * 64,
+        filename="tea.docx",
+        pages=[
+            PageText(
+                page_number=1,
+                text=page,
+                headings=tuple(StyledHeading(offset=page.index(line), level=level) for line, level in marks),
+            ),
+            PageText(page_number=2, text=f"1. NUMBERED BUT NOT STYLED\n{PROSE}"),
+        ],
+    )
+
+    titles = {chunk.section_title for chunk in recursive_chunks(document)}
+
+    assert titles == {"Our Year in Tea", "Our Year in Tea > Portland Shops"}
+    assert [(c.text, c.level) for c in outline_candidates(document)] == [
+        ("Our Year in Tea", 1),
+        ("Portland Shops", 2),
     ]
 
 

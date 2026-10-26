@@ -8,11 +8,12 @@ import pytest
 from langchain_core.exceptions import OutputParserException
 
 from genai_chatbot.chunking import HeadingCandidate
+from genai_chatbot.documents import DocumentError
 from genai_chatbot.graphs import ingestion
 from genai_chatbot.graphs.ingestion import IngestionError, build_ingestion_graph, ingest
-from genai_chatbot.pdf_processing import PDFProcessingError
 from genai_chatbot.schemas import Chunk, OutlineHeading, SectionOutline
 from tests.support.documents import REPORT_PAGES
+from tests.support.docx import make_docx, paragraph
 from tests.support.fake_llm import (
     TEST_CORRELATION,
     Script,
@@ -53,10 +54,25 @@ def strong_outline(messages) -> SectionOutline:
     return SectionOutline(headings=headings)
 
 
-def run(pdf: bytes, router, index: RecordingIndex | None = None, events: list | None = None):
+def run(
+    data: bytes,
+    router,
+    index: RecordingIndex | None = None,
+    events: list | None = None,
+    filename: str = "report.pdf",
+):
     index = index if index is not None else RecordingIndex()
     graph = build_ingestion_graph(index, router, TEST_CORRELATION)
-    return ingest(graph, "report.pdf", pdf, on_progress=events.append if events is not None else None)
+    return ingest(graph, filename, data, on_progress=events.append if events is not None else None)
+
+
+def word_report(topics: list[str], paragraphs_per_section: int = 1) -> bytes:
+    """A Word file with a numbered Heading 1 per topic and no recorded page breaks."""
+    body = []
+    for number, topic in enumerate(topics, start=1):
+        body.append(paragraph(f"{number}. {topic.title()}", style="Heading1"))
+        body += [paragraph(lorem_paragraph(topic)) for _ in range(paragraphs_per_section)]
+    return make_docx(body)
 
 
 @pytest.fixture
@@ -75,6 +91,34 @@ def test_a_simple_document_is_chunked_without_calling_a_model(simple_pdf):
     assert result.chunk_count == len(index.chunks) == 3
     assert [chunk.page_number for chunk in index.chunks] == [1, 2, 3]
     assert result.page_count == 3 and result.filename == "report.pdf"
+
+
+def test_a_word_document_is_chunked_by_its_heading_styles():
+    router, primary, _ = make_router(always(AssertionError("no model call expected")))
+    index = RecordingIndex()
+
+    result = run(word_report(["roasting", "brewing", "serving"]), router, index, filename="report.docx")
+
+    assert (result.filename, result.has_page_numbers, result.strategy) == ("report.docx", False, "recursive")
+    assert [chunk.section_title for chunk in index.chunks] == ["1. Roasting", "2. Brewing", "3. Serving"]
+    assert primary.calls == []
+
+
+def test_a_long_word_document_is_outlined_from_its_heading_styles():
+    topics = [f"region {chr(ord('a') + n)}" for n in range(25)]
+    router, primary, _ = make_router(Script({SectionOutline: strong_outline}))
+    index = RecordingIndex()
+
+    result = run(word_report(topics, paragraphs_per_section=12), router, index, filename="long.docx")
+
+    assert (result.is_complex, result.strategy, result.has_page_numbers) == (True, "model_assisted", False)
+    assert result.page_count > 20
+    (prompt,) = primary.calls_for(SectionOutline)
+    candidates = [line for line in prompt[-1].content.split("\n") if line.startswith("h")]
+    assert len(candidates) == 25 and candidates[0].endswith("| 1. Region A")
+    assert {chunk.section_title for chunk in index.chunks} == {
+        f"{n}. {topic.title()}" for n, topic in enumerate(topics, 1)
+    }
 
 
 def test_a_complex_document_is_chunked_along_the_models_outline(northwind_pdf, northwind):
@@ -219,10 +263,10 @@ def test_invalid_recursive_chunks_stop_ingestion(simple_pdf, monkeypatch):
 
 
 def test_unreadable_files_raise_the_extraction_error():
-    with pytest.raises(PDFProcessingError) as raised:
+    with pytest.raises(DocumentError) as raised:
         run(b"plain text, not a PDF", router=None)
 
-    assert raised.value.kind == "not_pdf"
+    assert raised.value.kind == "unsupported"
 
 
 def test_progress_is_reported_in_order_up_to_completion(northwind_pdf):

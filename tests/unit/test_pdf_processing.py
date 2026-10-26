@@ -7,7 +7,9 @@ from pydantic import ValidationError
 from pypdf import PageObject
 
 from genai_chatbot import pdf_processing
-from genai_chatbot.pdf_processing import PDFProcessingError, clean_pages, clean_text, extract_document
+from genai_chatbot.documents import DocumentError
+from genai_chatbot.extraction import extract_document
+from genai_chatbot.pdf_processing import clean_pages, clean_text
 from genai_chatbot.schemas import ExtractedDocument, PageText
 from tests.support.pdfs import encrypt_pdf, make_image_only_pdf, make_pdf, make_zero_page_pdf
 
@@ -19,7 +21,7 @@ THREE_PAGES = [
 
 
 def problem(data: bytes, filename: str = "upload.pdf") -> str:
-    with pytest.raises(PDFProcessingError) as caught:
+    with pytest.raises(DocumentError) as caught:
         extract_document(data, filename)
     return caught.value.kind
 
@@ -116,22 +118,6 @@ def test_page_that_is_all_furniture_keeps_its_text() -> None:
 # Problems the person can fix
 
 
-def test_empty_upload() -> None:
-    assert problem(b"") == "empty_file"
-
-
-@pytest.mark.parametrize(
-    "data",
-    [
-        b"Just some notes saved with a .pdf name.",
-        b"\x89PNG\r\n\x1a\n" + b"\x00" * 64,
-        b"PK\x03\x04 a zip or docx file",
-    ],
-)
-def test_non_pdf_content_is_rejected_even_with_a_pdf_name(data: bytes) -> None:
-    assert problem(data, "notes.pdf") == "not_pdf"
-
-
 @pytest.mark.parametrize(
     "corrupt",
     [
@@ -150,7 +136,7 @@ def test_zero_page_pdf() -> None:
 
 
 def test_scanned_or_image_only_pdf_mentions_ocr() -> None:
-    with pytest.raises(PDFProcessingError) as caught:
+    with pytest.raises(DocumentError) as caught:
         extract_document(make_image_only_pdf(), "scan.pdf")
 
     assert caught.value.kind == "no_text"
@@ -164,7 +150,7 @@ def test_password_protected_pdf() -> None:
 def test_page_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pdf_processing, "MAX_PAGES", 2)
 
-    with pytest.raises(PDFProcessingError) as caught:
+    with pytest.raises(DocumentError) as caught:
         extract_document(make_pdf(THREE_PAGES), "long.pdf")
 
     assert caught.value.kind == "too_many_pages"
@@ -194,12 +180,6 @@ def test_every_page_unreadable_is_corrupt(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(PageObject, "extract_text", broken)
 
     assert problem(make_pdf(THREE_PAGES)) == "corrupt"
-
-
-def test_messages_are_plain_language() -> None:
-    for kind in ("empty_file", "not_pdf", "corrupt", "encrypted", "no_pages", "no_text"):
-        message = PDFProcessingError(kind).message
-        assert message.endswith(".") and "pypdf" not in message.lower() and "exception" not in message.lower()
 
 
 # Schema validation

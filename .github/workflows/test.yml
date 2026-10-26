@@ -30,8 +30,8 @@ jobs:
         run: |
           uv run ruff check .
           uv run ruff format --check .
-      # Generated PDFs and a scripted model: no provider calls and no API keys. Tests marked live_llm
-      # or evaluation are excluded by the pytest configuration.
+      # Generated PDFs and Word files and a scripted model: no provider calls and no API keys. Tests marked
+      # live_llm or evaluation are excluded by the pytest configuration.
       - name: Unit, integration and app tests
         run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=100
 

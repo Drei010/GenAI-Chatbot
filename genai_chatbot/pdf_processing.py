@@ -1,55 +1,28 @@
-"""Check that an upload is a readable PDF and extract clean text for each page."""
+"""Read a PDF upload into clean text for each page."""
 
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from io import BytesIO
-from pathlib import PurePath
-from typing import Literal
 
 from pypdf import PasswordType, PdfReader
 
+from genai_chatbot.documents import (
+    MAX_PAGES,
+    MIN_TEXT_CHARS,
+    DocumentError,
+    display_name,
+    document_fingerprint,
+    meaningful_chars,
+)
 from genai_chatbot.schemas import ExtractedDocument, PageText
 
-MAX_PAGES = 500
-# A whole document with fewer letters and digits than this has no usable text layer.
-MIN_TEXT_CHARS = 20
 # Lines repeated at the top or bottom of this share of pages are running headers or footers.
 REPEATED_EDGE_SHARE = 0.6
 EDGE_LINES = 2
-
-ProblemKind = Literal[
-    "empty_file", "not_pdf", "corrupt", "encrypted", "no_pages", "too_many_pages", "no_text"
-]
-
-_MESSAGES: dict[ProblemKind, str] = {
-    "empty_file": "The file is empty. Choose a PDF that has content.",
-    "not_pdf": "This file isn't a PDF. Upload a document saved in PDF format.",
-    "corrupt": (
-        "This PDF couldn't be read. It may be damaged or incomplete; try downloading or exporting it again."
-    ),
-    "encrypted": "This PDF is password-protected. Remove the password, then upload it again.",
-    "no_pages": "This PDF has no pages.",
-    "too_many_pages": "This PDF has {pages} pages. The limit is {limit} pages per document.",
-    "no_text": (
-        "No selectable text was found in this PDF. It looks like a scanned or image-only document, "
-        "and OCR (reading text from images) isn't supported in this version."
-    ),
-}
-
-
-class PDFProcessingError(Exception):
-    """A problem with an uploaded file, worded for the person who uploaded it."""
-
-    def __init__(self, kind: ProblemKind, **details: object) -> None:
-        self.kind = kind
-        self.message = _MESSAGES[kind].format(**details)
-        super().__init__(self.message)
-
 
 _HORIZONTAL_SPACE = re.compile(r"[^\S\n]+")
 _HYPHENATED_BREAK = re.compile(r"([a-z])-\n([a-z])")
@@ -103,9 +76,9 @@ def _strip_page_furniture(text: str, repeated: set[str]) -> str:
     kept = _trim_edges(
         lines, lambda line: bool(_PAGE_NUMBER_LINE.match(line)) or _DIGITS.sub("#", line) in repeated
     )
-    if not _meaningful_chars(kept):
+    if not meaningful_chars(kept):
         kept = _trim_edges(lines, lambda line: bool(_PAGE_NUMBER_LINE.match(line)))
-    return kept if _meaningful_chars(kept) else text
+    return kept if meaningful_chars(kept) else text
 
 
 def clean_pages(raw_pages: list[str]) -> list[str]:
@@ -114,50 +87,31 @@ def clean_pages(raw_pages: list[str]) -> list[str]:
     return [_strip_page_furniture(page, repeated) for page in pages]
 
 
-def _meaningful_chars(text: str) -> int:
-    return sum(1 for char in text if char.isalnum())
-
-
-def _display_name(filename: str) -> str:
-    name = PurePath(filename.replace("\\", "/")).name
-    name = "".join(char for char in name if char.isprintable()).strip()
-    return name[:255] or "document.pdf"
-
-
 def _open(data: bytes) -> PdfReader:
     reader = PdfReader(BytesIO(data), strict=False)
     if reader.is_encrypted and reader.decrypt("") == PasswordType.NOT_DECRYPTED:
-        raise PDFProcessingError("encrypted")
+        raise DocumentError("encrypted")
     return reader
 
 
-def document_fingerprint(data: bytes) -> str:
-    """The document ID: SHA-256 of the uploaded bytes, so the same file always gets the same ID."""
-    return hashlib.sha256(data).hexdigest()
+def extract_pdf(data: bytes, filename: str) -> ExtractedDocument:
+    """Return a PDF's cleaned, 1-based page texts. `extraction.extract_document` checks first that the
+    upload is a PDF.
 
-
-def extract_document(data: bytes, filename: str) -> ExtractedDocument:
-    """Validate an upload and return its cleaned, 1-based page texts.
-
-    Raises PDFProcessingError for empty, non-PDF, corrupt, password-protected, oversized and
-    text-less (scanned) files.
+    Raises DocumentError for corrupt, password-protected, oversized and text-less (scanned) files.
     """
-    if not data:
-        raise PDFProcessingError("empty_file")
-    if b"%PDF-" not in data[:1024]:
-        raise PDFProcessingError("not_pdf")
     try:
         reader = _open(data)
         page_count = len(reader.pages)
-    except PDFProcessingError:
+    except DocumentError:
         raise
     except Exception as exc:  # pypdf raises a variety of errors for damaged files
-        raise PDFProcessingError("corrupt") from exc
+        raise DocumentError("corrupt") from exc
 
     if page_count == 0:
-        raise PDFProcessingError("no_pages")
+        raise DocumentError("no_pages")
     if page_count > MAX_PAGES:
-        raise PDFProcessingError("too_many_pages", pages=page_count, limit=MAX_PAGES)
+        raise DocumentError("too_many_pages", pages=page_count, limit=MAX_PAGES)
 
     raw_pages: list[str] = []
     failures = 0
@@ -168,14 +122,14 @@ def extract_document(data: bytes, filename: str) -> ExtractedDocument:
             failures += 1
             raw_pages.append("")
     if failures == page_count:
-        raise PDFProcessingError("corrupt")
+        raise DocumentError("corrupt")
 
     texts = clean_pages(raw_pages)
-    if sum(_meaningful_chars(text) for text in texts) < MIN_TEXT_CHARS:
-        raise PDFProcessingError("no_text")
+    if sum(meaningful_chars(text) for text in texts) < MIN_TEXT_CHARS:
+        raise DocumentError("no_text")
 
     return ExtractedDocument(
         document_id=document_fingerprint(data),
-        filename=_display_name(filename),
+        filename=display_name(filename, "document.pdf"),
         pages=[PageText(page_number=number, text=text) for number, text in enumerate(texts, start=1)],
     )

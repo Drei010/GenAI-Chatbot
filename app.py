@@ -10,10 +10,10 @@ from typing import Any
 import streamlit as st
 
 from genai_chatbot.config import AppSettings, SettingsResult, SetupIssue, load_settings
+from genai_chatbot.documents import DocumentError, document_fingerprint
 from genai_chatbot.graphs.ingestion import IngestionError, build_ingestion_graph, ingest
 from genai_chatbot.graphs.qa import MAX_QUESTION_CHARS, Conversation
 from genai_chatbot.observability import Correlation, configure_logging, log_stage, new_id
-from genai_chatbot.pdf_processing import PDFProcessingError, document_fingerprint
 from genai_chatbot.providers import LLMRouter, build_router
 from genai_chatbot.schemas import ChatAnswer, ChatTurn, Citation
 from genai_chatbot.vector_store import DocumentIndex, warm_up
@@ -22,10 +22,14 @@ APP_TITLE = "PDF Knowledge Chatbot"
 
 RouterFactory = Callable[[AppSettings], LLMRouter]
 
-NO_PASSAGES = "This PDF's text couldn't be prepared for questions. Try another copy of the file."
-PREPARE_FAILED = "Something went wrong while preparing this PDF. Please try again."
+NO_PASSAGES = "This document's text couldn't be prepared for questions. Try another copy of the file."
+PREPARE_FAILED = "Something went wrong while preparing this document. Please try again."
 ASK_PLACEHOLDER = "Ask a question about the document"
-NO_DOCUMENT_PLACEHOLDER = "Upload a PDF to start asking questions"
+NO_DOCUMENT_PLACEHOLDER = "Upload a document to start asking questions"
+NO_PAGE_NUMBERS = (
+    "This Word file doesn't record where its pages break, so each source shows its section and an "
+    "excerpt instead of a page number."
+)
 EXAMPLES = (
     "Try a figure (“What was revenue in the last fiscal year?”), a summary (“Summarize the key facts”) "
     "or a comparison (“Compare the segments in a table”). Follow-up questions work too."
@@ -49,8 +53,8 @@ def breakable(name: str) -> str:
 
 
 def answer_markdown(text: str) -> str:
-    """Keep the answer's lists, tables and emphasis, but drop images and links (text planted in a PDF
-    could make the browser fetch a URL) and keep dollar signs from being read as math."""
+    """Keep the answer's lists, tables and emphasis, but drop images and links (text planted in a
+    document could make the browser fetch a URL) and keep dollar signs from being read as math."""
     text = _IMAGE.sub(r"\1", text)
     text = _LINK.sub(r"\1", text)
     text = _LINK_DEFINITION.sub("", text)
@@ -83,7 +87,7 @@ Supported providers: `anthropic`, `openai`, `google_genai`, `groq` and `mistrala
 
 @dataclass(frozen=True)
 class ActiveDocument:
-    """The one PDF this browser session is working with."""
+    """The one document this browser session is working with."""
 
     upload_key: str
     document_id: str
@@ -91,6 +95,7 @@ class ActiveDocument:
     page_count: int
     pages_without_text: int
     notices: tuple[str, ...] = ()
+    has_page_numbers: bool = True
 
 
 def render_setup_message(issues: list[SetupIssue]) -> None:
@@ -144,7 +149,7 @@ def reset_session() -> None:
 
 def _upload_failure(exc: Exception) -> tuple[str, str, str]:
     """(outcome, error kind, user message) for a failed upload. Unexpected errors stay generic."""
-    if isinstance(exc, PDFProcessingError):
+    if isinstance(exc, DocumentError):
         return "rejected", exc.kind, exc.message
     if isinstance(exc, IngestionError):
         return "rejected", "no_passages", NO_PASSAGES
@@ -162,7 +167,7 @@ def process_upload(upload_key: str, filename: str, data: bytes) -> None:
     # Progress shows while the file is prepared; the banner in the main area then reports the outcome.
     slot = st.empty()
     with slot.status(f"Preparing {escape_markdown(filename)}…", expanded=True):
-        progress = st.progress(0.0, text="Reading the PDF…")
+        progress = st.progress(0.0, text="Reading the document…")
 
         def show_progress(event: dict[str, Any]) -> None:
             progress.progress(event["fraction"], text=event["message"])
@@ -199,6 +204,7 @@ def process_upload(upload_key: str, filename: str, data: bytes) -> None:
         page_count=result.page_count,
         pages_without_text=result.pages_without_text,
         notices=result.notices,
+        has_page_numbers=result.has_page_numbers,
     )
 
 
@@ -219,10 +225,10 @@ def render_sidebar() -> None:
     with st.sidebar:
         st.header("Document")
         uploaded = st.file_uploader(
-            "Upload a PDF",
-            type=["pdf"],
+            "Upload a PDF or Word file",
+            type=["pdf", "docx"],
             key=f"uploader-{st.session_state.generation}",
-            help="One PDF at a time. It stays in memory for this browser session only.",
+            help="One PDF or Word (.docx) file at a time. It stays in memory for this browser session only.",
         )
         details = st.container()
         controls = st.container()
@@ -231,7 +237,8 @@ def render_sidebar() -> None:
 
     active: ActiveDocument | None = st.session_state.active
     if active:
-        details.markdown(f"**{escape_markdown(breakable(active.filename))}**  \n{active.page_count} pages")
+        size = f"{active.page_count} pages" if active.has_page_numbers else "No page numbers in this file"
+        details.markdown(f"**{escape_markdown(breakable(active.filename))}**  \n{size}")
     controls.button(
         "Reset chat and document",
         on_click=reset_session,
@@ -241,37 +248,46 @@ def render_sidebar() -> None:
     )
 
 
-def render_sources(citations: Sequence[Citation]) -> None:
+def source_location(citation: Citation, show_pages: bool) -> str:
+    """The file and page of a source or, for a Word file without page numbers, its section."""
+    name = escape_markdown(citation.filename)
+    if show_pages:
+        return f"{name}, page {citation.page_number}"
+    if citation.section_title:
+        section = " › ".join(title.strip() for title in citation.section_title.split(" > "))
+        return f"{name}, section “{escape_markdown(section)}”"
+    return name
+
+
+def render_sources(citations: Sequence[Citation], show_pages: bool) -> None:
     with st.container(border=True):
         st.markdown("**Sources**")
         for citation in citations:
-            st.markdown(
-                f"**[{citation.number}]** {escape_markdown(citation.filename)}, page {citation.page_number}"
-            )
+            st.markdown(f"**[{citation.number}]** {source_location(citation, show_pages)}")
             st.caption(f"“{escape_markdown(citation.excerpt)}”")
 
 
-def render_answer(answer: ChatAnswer) -> None:
+def render_answer(answer: ChatAnswer, show_pages: bool) -> None:
     if answer.status == "answered":
         st.markdown(answer_markdown(answer.text))
-        render_sources(answer.citations)
+        render_sources(answer.citations, show_pages)
     elif answer.status == "unsupported":
         st.info(answer.text, icon="🔎")
     else:
         st.warning(answer.text, icon="⚠️")
 
 
-def render_turn(turn: ChatTurn) -> None:
+def render_turn(turn: ChatTurn, show_pages: bool) -> None:
     with st.chat_message(turn.role):
         if turn.answer is not None:
-            render_answer(turn.answer)
+            render_answer(turn.answer, show_pages)
         else:
             st.markdown(escape_markdown(turn.content))
 
 
-def answer_question(conversation: Conversation, question: str) -> None:
+def answer_question(conversation: Conversation, question: str, show_pages: bool) -> None:
     """Show the question, then progress while the answer is worked out, then the answer."""
-    render_turn(ChatTurn(role="user", content=question))
+    render_turn(ChatTurn(role="user", content=question), show_pages)
     with st.chat_message("assistant"):
         placeholder = st.empty()
         with placeholder.status("Working on your question…") as status:
@@ -279,7 +295,7 @@ def answer_question(conversation: Conversation, question: str) -> None:
                 question, on_progress=lambda event: status.update(label=event["message"])
             )
         placeholder.empty()
-        render_answer(answer)
+        render_answer(answer, show_pages)
 
 
 def render_main_area() -> None:
@@ -296,11 +312,16 @@ def render_main_area() -> None:
         st.error(failed[1], icon="🚫")
         return
     if active is None or conversation is None:
-        st.info("Upload a PDF in the sidebar to get started.", icon="📄")
+        st.info("Upload a PDF or Word file in the sidebar to get started.", icon="📄")
         return
-    st.success(f"**{escape_markdown(active.filename)}** is ready: {active.page_count} pages read.", icon="✅")
+    name = escape_markdown(active.filename)
+    if active.has_page_numbers:
+        st.success(f"**{name}** is ready: {active.page_count} pages read.", icon="✅")
+    else:
+        st.success(f"**{name}** is ready.", icon="✅")
+        st.caption(NO_PAGE_NUMBERS)
     if active.pages_without_text:
-        st.caption(f"{active.pages_without_text} page(s) had no selectable text and will be skipped.")
+        st.caption(f"{active.pages_without_text} page(s) had no text to read and will be skipped.")
     for notice in active.notices:
         st.warning(notice, icon="⚠️")
 
@@ -308,9 +329,9 @@ def render_main_area() -> None:
     if not history and not question:
         st.caption(EXAMPLES)
     for turn in history:
-        render_turn(turn)
+        render_turn(turn, active.has_page_numbers)
     if question:
-        answer_question(conversation, question)
+        answer_question(conversation, question, active.has_page_numbers)
 
 
 def main(
@@ -319,7 +340,10 @@ def main(
 ) -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
     st.title(APP_TITLE)
-    st.caption("Upload a PDF, ask questions in plain language, and get answers with page-level sources.")
+    st.caption(
+        "Upload a PDF or Word document, ask questions in plain language, and get answers that cite "
+        "their sources."
+    )
 
     result = settings_loader()
     if result.settings is None:

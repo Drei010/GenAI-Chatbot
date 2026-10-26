@@ -1,7 +1,7 @@
 """Turn the model's passage IDs into sources a reader can check.
 
-The model only ever sees passage IDs (P1, P2, ...). Everything a source shows (filename, page and
-excerpt) is copied from the retrieved passage, never taken from model output.
+The model only ever sees passage IDs (P1, P2, ...). Everything a source shows (filename, page or
+section, and excerpt) is copied from the retrieved passage, never taken from model output.
 """
 
 from __future__ import annotations
@@ -179,6 +179,7 @@ def resolve_citations(
             filename=passages[label].filename,
             page_number=passages[label].page_number,
             excerpt=select_excerpt(passages[label].text, _claims_citing(answer, label)),
+            section_title=passages[label].section_title,
         )
         for label in labels
     ]

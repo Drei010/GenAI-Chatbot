@@ -1,7 +1,7 @@
 # Architecture
 
-The PDF Knowledge Chatbot is one Streamlit process. A browser session uploads one PDF, which an
-ingestion workflow turns into indexed passages; each question then runs through a question-answer
+The PDF Knowledge Chatbot is one Streamlit process. A browser session uploads one PDF or Word (.docx)
+document, which an ingestion workflow turns into indexed passages; each question then runs through a question-answer
 workflow that plans the search, retrieves passages, asks a model for an answer that cites them, and
 checks every citation before anything is shown. Both workflows are LangGraph graphs, model calls go
 through a provider-neutral router with a fallback, and everything a session creates lives in memory.
@@ -9,7 +9,9 @@ through a provider-neutral router with a fallback, and everything a session crea
 ```mermaid
 flowchart LR
     UI["Streamlit UI<br/>app.py"] -->|upload| ING["Ingestion graph<br/>graphs/ingestion.py"]
-    ING --> PDF["PDF checks and text<br/>pdf_processing.py"]
+    ING --> EX["Upload checks<br/>extraction.py"]
+    EX --> PDF["PDF text<br/>pdf_processing.py"]
+    EX --> DOCX["Word text<br/>docx_processing.py"]
     ING --> CH["Chunking<br/>chunking.py"]
     ING --> VS[("Chroma, in memory<br/>vector_store.py")]
     UI -->|question| QA["Question-answer graph<br/>graphs/qa.py"]
@@ -28,7 +30,10 @@ flowchart LR
 |---|---|
 | `app.py` | Streamlit UI: setup screen, upload and progress, chat, sources, reset and replacement. Keeps per-session objects in `st.session_state`. |
 | `genai_chatbot/config.py` | `AppSettings` (pydantic-settings) from keyword arguments, environment, `.env`, then Streamlit secrets; turns validation errors into setup issues that never include values. |
-| `genai_chatbot/pdf_processing.py` | Upload checks (empty, not a PDF, corrupt, encrypted, no pages, page limit, no text layer), per-page extraction with pypdf, cleaning, and removal of running headers, footers and page numbers. |
+| `genai_chatbot/extraction.py` | Recognizes an upload by its content (a `%PDF-` header, a ZIP package, or the older compound-file format) and hands it to the PDF or Word reader; anything else is unsupported. |
+| `genai_chatbot/documents.py` | `DocumentError` and its plain-language messages (empty, unsupported, legacy .doc, corrupt, encrypted, too large, no pages, page limit, no text), document limits, display names and document IDs. |
+| `genai_chatbot/pdf_processing.py` | PDF checks (corrupt, encrypted, no pages, page limit, no text layer), per-page extraction with pypdf, cleaning, and removal of running headers, footers and page numbers. |
+| `genai_chatbot/docx_processing.py` | Word reading: body text in order, tables as rows, text boxes, heading styles, and page breaks that are used only when they add up (see *Word documents*). |
 | `genai_chatbot/chunking.py` | Complexity assessment, heading detection, section building, recursive and model-assisted chunking, chunk validation. |
 | `genai_chatbot/providers.py` | Chat models via `init_chat_model`, structured output, error classification, and `LLMRouter` (primary, then the fallback once on a rate limit). |
 | `genai_chatbot/vector_store.py` | `DocumentIndex`: one in-memory Chroma collection per session and document, local all-MiniLM-L6-v2 embeddings, search of up to four passages. |
@@ -53,8 +58,8 @@ flowchart LR
     validate -->|valid| index_chunks --> E((end))
 ```
 
-1. **extract** checks the upload and returns cleaned text per 1-based page. Problems become a
-   `PDFProcessingError` with a message written for the user.
+1. **extract** recognizes the upload as a PDF or a Word file and returns cleaned text per 1-based page.
+   Problems become a `DocumentError` with a message written for the user.
 2. **classify** marks a document complex when it has more than 20 pages, three or more table-like lines,
    or a heading hierarchy of at least two levels.
 3. **chunk_recursive** (simple documents, and the fallback) builds sections from strong headings
@@ -73,6 +78,35 @@ flowchart LR
 Every chunk stays within one page, so each source has a single page number, and every chunk is an exact
 substring of its page's cleaned text, so excerpts can be shown verbatim. Each node emits progress through
 LangGraph's custom stream, which the UI shows in a status box.
+
+## Word documents
+
+`docx_processing.py` reads the main document part of the .docx package with the standard library's
+`zipfile` and `defusedxml` (DTDs are refused, and a part whose declared size is over 32 MB isn't inflated).
+It walks the body in reading order:
+
+- paragraphs become lines; tabs and line breaks are kept, and a heading's line breaks become spaces;
+- each table row becomes one line with its cells joined by `|` (nested tables and merged cells included);
+- text boxes are read once (the first of Word's alternative encodings), after the paragraph they're
+  anchored to; equations keep their text;
+- inserted text, hyperlinks, content controls and field results are kept; deleted text, hidden text and
+  field codes are skipped. Headers, footers, footnotes, endnotes and comments are separate parts and
+  aren't read.
+
+Paragraphs whose style (or direct formatting) gives them an outline level, including Word's built-in
+"heading 1" to "heading 9" and Title styles and styles based on them, are passed to chunking as headings.
+When a document has such headings, `detect_headings` uses them instead of guessing from the text.
+
+A Word file doesn't store its page layout. Pages can only come from breaks the file records: inserted
+page breaks, "page break before" paragraphs, sections that start on a new page, and the
+`lastRenderedPageBreak` marks Word writes where pages broke in its last layout (a mark right after an
+inserted break is the same break). Those pages are trusted only if no page holds more than 6,000
+characters and their count equals the page count saved in `docProps/app.xml`, when that count is current
+(its saved word count is within a factor of two of the text's). Without a current count, Word's layout
+marks must be present. Otherwise the document is unpaged: its lines are packed into parts of about 3,000
+characters (a new part starts at a heading once the current one is half full), the parts stand in for
+pages inside the pipeline, `has_page_numbers` is false, and the UI shows each source's section instead of
+a page number. Page numbers that might be wrong are never shown.
 
 ## Question answering
 
@@ -170,32 +204,36 @@ disk except the embedding model cache.
 ## Security and privacy
 
 - **Secrets:** API keys are `SecretStr`, never logged or displayed; setup issues name the setting only.
-  `.env`, `secrets.toml` and uploaded PDFs are git-ignored, and a test scans tracked files for key
+  `.env`, `secrets.toml` and uploaded PDF and Word files are git-ignored, and a test scans tracked files for key
   patterns.
 - **Prompt injection:** document text and questions reach models only inside delimited data blocks, and
-  every system prompt says to treat that text as data. Passage tags are sanitized so a PDF can't close its
-  own tag, and values are inserted after templating so braces can't alter a prompt.
+  every system prompt says to treat that text as data. Passage tags are sanitized so a document can't
+  close its own tag, and values are inserted after templating so braces can't alter a prompt.
 - **Grounding:** the model never supplies source metadata. Citations are passage IDs that must match
-  retrieved passages; filenames, pages and excerpts come from the index.
+  retrieved passages; filenames, pages, sections and excerpts come from the index.
 - **Rendering:** answers keep Markdown lists and tables, but images, links and link definitions are
   removed (a planted image could make the browser fetch a URL) and `$` and `~` are escaped. Questions and
   filenames are fully escaped. HTML is never enabled.
 - **Data sent to providers:** the question, recent conversation turns (for follow-ups), retrieved
   passages and, for complex documents, heading candidates. Embeddings are computed locally.
+- **Uploaded files:** the type is decided by content, not the file name. Word files are parsed without
+  DTDs or entity expansion, and oversized parts are refused before they are inflated.
 
 ## Observability
 
 `log_event` and `log_stage` write one JSON line per event to stderr through the `genai_chatbot` logger. Only
 allowlisted keys with scalar values are kept (stage, duration, provider route, provider, model, fallback
 use and reason, retrieval and passage counts, query count, route, response style, citation count, page
-and chunk counts, strategy, outcome, error kind), always with the session ID and, for an upload or a
+and chunk counts, whether a Word file has page numbers, strategy, outcome, error kind), always with the session ID and, for an upload or a
 question, a request ID. Keys, document text, prompts, questions and excerpts can't be logged by accident:
 an unknown keyword argument is dropped. Library loggers that print document details are set to ERROR.
 
 ## Testing strategy
 
 - **Unit tests** cover extraction, cleaning, chunking rules, prompts, citations, schemas, settings,
-  logging and provider error handling, with PDFs generated by reportlab.
+  logging and provider error handling, with PDFs generated by reportlab and Word files built from
+  WordprocessingML snippets (`tests/support/docx.py`; LibreOffice opens them and paginates them as they
+  record).
 - **Integration tests** run both graphs against the real Chroma index and embedding model, with scripted
   fake models (`tests/support/fake_llm.py`) for failover, malformed output, decomposition, follow-ups and
   citation checks.
@@ -219,6 +257,7 @@ The default run is offline and deterministic, with 100% line and branch coverage
 | Citations | Passage IDs resolved by the app | Model-written page numbers and quotes: easy to hallucinate. Highlighting by string search: fragile on reworded answers. |
 | Unsupported questions | Model judges support, app validates citations | A similarity threshold: MiniLM scores vary by phrasing, so a threshold either blocks good answers or lets weak ones through. |
 | Extraction | pypdf | PyMuPDF: faster and layout-aware but AGPL. pdfplumber: better tables, slower on long reports. |
+| Word extraction | `zipfile` and `defusedxml`, walking the XML | python-docx: adds lxml, and its paragraph text skips tracked insertions, content controls and text boxes, so the XML would need walking anyway. Converting to PDF with LibreOffice: real page numbers, but a large system dependency and a subprocess per upload. Estimating pages from character counts: page numbers that look exact but aren't. |
 | Embeddings | Local all-MiniLM-L6-v2 (ONNX) | Hosted embeddings: better on financial text, but send the whole document to another service and need another key. |
 | Vector store | In-memory Chroma, one collection per session and document | Persistent Chroma or FAISS on disk: the plan forbids persistence. One shared collection: isolation by filter only. |
 | Conversation state | LangGraph checkpointer | `st.session_state` lists: simpler, but the graph would need its own copy of the history. |
@@ -227,5 +266,5 @@ The default run is offline and deterministic, with 100% line and branch coverage
 
 ## Limits of v1
 
-One document per session; no OCR; tables flattened to text lines; one page per source; no streaming;
-memory grows with concurrent sessions. See the README for the user-facing list.
+One document per session; no OCR; tables flattened to text lines; one page per source; Word page numbers
+only when the file's breaks add up; no streaming; memory grows with concurrent sessions. See the README for the user-facing list.

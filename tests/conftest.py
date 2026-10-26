@@ -9,8 +9,8 @@ from collections.abc import Callable, Iterator
 import pytest
 
 from genai_chatbot import config
+from genai_chatbot.extraction import extract_document
 from genai_chatbot.observability import LOGGER_NAME
-from genai_chatbot.pdf_processing import extract_document
 from genai_chatbot.schemas import ExtractedDocument
 from tests.support.documents import long_report_pdf, report_pdf
 

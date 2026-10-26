@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePath
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -11,9 +12,10 @@ import app
 from genai_chatbot.graphs.ingestion import IngestionError
 from genai_chatbot.graphs.qa import UNSUPPORTED
 from genai_chatbot.providers import LLMRouter
-from genai_chatbot.schemas import AnswerDraft, OutlineHeading, QueryPlan, SectionOutline
+from genai_chatbot.schemas import AnswerDraft, Citation, OutlineHeading, QueryPlan, SectionOutline
 from genai_chatbot.vector_store import get_client
 from tests.support import heuristic_llm
+from tests.support.docx import PAGE_BREAK, RENDERED_BREAK, compound_file, make_docx, paragraph
 from tests.support.fake_llm import Script, always, bad_credentials, make_router, rate_limited
 from tests.support.paths import PROJECT_ROOT
 from tests.support.pdfs import make_image_only_pdf, make_pdf
@@ -21,6 +23,10 @@ from tests.support.pdfs import make_image_only_pdf, make_pdf
 APP_PATH = str(PROJECT_ROOT / "app.py")
 FIRST_HEADING = SectionOutline(headings=[OutlineHeading(candidate_id="h1", level=1)])
 TEA_PDF = make_pdf(["Harbor Tea Company employed 85 people in 2024."])
+MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
 _ESCAPE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|>~<$])")
 
 
@@ -37,7 +43,8 @@ def start_app(router: LLMRouter | None = None) -> AppTest:
 
 
 def upload(at: AppTest, filename: str, data: bytes) -> AppTest:
-    at.sidebar.file_uploader[0].set_value((filename, data, "application/pdf"))
+    mime_type = MIME_TYPES.get(PurePath(filename).suffix, "application/octet-stream")
+    at.sidebar.file_uploader[0].set_value((filename, data, mime_type))
     return at.run()
 
 
@@ -87,7 +94,7 @@ def test_app_starts_with_valid_settings() -> None:
     assert not at.exception
     assert not at.error
     assert at.title[0].value == "PDF Knowledge Chatbot"
-    assert at.info[0].value == "Upload a PDF in the sidebar to get started."
+    assert at.info[0].value == "Upload a PDF or Word file in the sidebar to get started."
 
 
 def test_uploading_a_pdf_reads_and_indexes_it(northwind_pdf: bytes) -> None:
@@ -114,14 +121,16 @@ def test_reruns_do_not_process_the_same_upload_again() -> None:
     at.run()
 
     assert at.session_state.index is index and not index.is_deleted
-    assert "1 page(s) had no selectable text and will be skipped." in [c.value for c in at.caption]
+    assert "1 page(s) had no text to read and will be skipped." in [c.value for c in at.caption]
 
 
 def test_upload_problems_are_explained_and_leave_no_index() -> None:
     at = start_app()
 
     upload(at, "notes.pdf", b"plain text pretending to be a PDF")
-    assert [e.value for e in at.error] == ["This file isn't a PDF. Upload a document saved in PDF format."]
+    assert [e.value for e in at.error] == [
+        "This file isn't a PDF or a Word (.docx) document. Upload a file saved in one of those formats."
+    ]
 
     upload(at, "scan.pdf", make_image_only_pdf())
     assert "OCR" in at.error[0].value
@@ -186,7 +195,7 @@ def test_removing_the_file_forgets_the_document_and_index() -> None:
 
     assert at.session_state.active is None and index.is_deleted
     assert collections_for(at) == set()
-    assert at.info[0].value == "Upload a PDF in the sidebar to get started."
+    assert at.info[0].value == "Upload a PDF or Word file in the sidebar to get started."
 
 
 def test_reset_clears_the_document_index_and_uploader() -> None:
@@ -318,6 +327,90 @@ def test_a_new_document_starts_a_new_conversation(northwind_pdf: bytes) -> None:
     assistant = at.chat_message[1]
     assert "85 people" in assistant.markdown[0].value
     assert shown(assistant.markdown[2].value) == "**[1]** tea.pdf, page 1"
+
+
+def tea_docx(*, recorded_pages: bool) -> bytes:
+    """Harbor Tea's review as a Word file: two pages Word recorded, or the same text with no page breaks."""
+    breaks = (PAGE_BREAK, RENDERED_BREAK) if recorded_pages else ("", "")
+    return make_docx(
+        [
+            paragraph("Harbor Tea Company", style="Title"),
+            paragraph("Harbor Tea Company employed 85 people at the end of 2024.", breaks[0]),
+            paragraph(breaks[1], "Shops and Growth", style="Heading2"),
+            paragraph("Harbor Tea opened two new shops in Portland during 2024."),
+        ],
+        pages=2 if recorded_pages else None,
+    )
+
+
+def test_the_uploader_takes_pdf_and_word_files() -> None:
+    at = start_app()
+
+    assert list(at.sidebar.file_uploader[0].proto.type) == [".pdf", ".docx"]
+
+
+def test_a_word_document_with_recorded_pages_cites_page_numbers() -> None:
+    at = start_app(heuristic_llm.heuristic_router())
+    upload(at, "harbor-tea.docx", tea_docx(recorded_pages=True))
+
+    assert not at.exception and not at.error
+    assert shown(at.success[0].value) == "**harbor-tea.docx** is ready: 2 pages read."
+    assert shown(at.sidebar.markdown[0].value) == "**harbor-\u200btea.\u200bdocx**  \n2 pages"
+
+    ask(at, "How many new shops did Harbor Tea open?")
+
+    assistant = at.chat_message[1]
+    assert "two new shops" in assistant.markdown[0].value
+    assert shown(assistant.markdown[2].value) == "**[1]** harbor-tea.docx, page 2"
+
+
+def test_a_word_document_without_page_numbers_cites_sections() -> None:
+    at = start_app(heuristic_llm.heuristic_router())
+    upload(at, "harbor-tea.docx", tea_docx(recorded_pages=False))
+
+    assert not at.exception and not at.error
+    assert shown(at.success[0].value) == "**harbor-tea.docx** is ready."
+    assert app.NO_PAGE_NUMBERS in [c.value for c in at.caption]
+    assert (
+        shown(at.sidebar.markdown[0].value)
+        == "**harbor-\u200btea.\u200bdocx**  \nNo page numbers in this file"
+    )
+
+    ask(at, "How many new shops did Harbor Tea open?")
+    ask(at, "How many people did Harbor Tea employ?")
+
+    first, second = at.chat_message[1], at.chat_message[3]
+    assert shown(first.markdown[2].value) == (
+        "**[1]** harbor-tea.docx, section “Harbor Tea Company › Shops and Growth”"
+    )
+    assert shown(second.markdown[2].value) == "**[1]** harbor-tea.docx, section “Harbor Tea Company”"
+
+
+def test_sources_name_their_page_or_section() -> None:
+    citation = Citation(
+        number=1,
+        chunk_id="c-1",
+        filename="tea_review.docx",
+        page_number=3,
+        excerpt="Harbor Tea opened two new shops.",
+        section_title="Our Year > Shops [2024]",
+    )
+
+    assert shown(app.source_location(citation, show_pages=True)) == "tea_review.docx, page 3"
+    assert shown(app.source_location(citation, show_pages=False)) == (
+        "tea_review.docx, section “Our Year › Shops [2024]”"
+    )
+    untitled = citation.model_copy(update={"section_title": None})
+    assert shown(app.source_location(untitled, show_pages=False)) == "tea_review.docx"
+
+
+def test_word_upload_problems_are_explained() -> None:
+    at = start_app()
+
+    upload(at, "minutes.docx", compound_file("WordDocument", "1Table"))
+
+    assert at.error[0].value.startswith("This is an older Word (.doc) file")
+    assert at.session_state.active is None and collections_for(at) == set()
 
 
 def test_answers_keep_formatting_but_lose_links_images_and_math() -> None:

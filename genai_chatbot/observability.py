@@ -26,6 +26,7 @@ SAFE_FIELDS = frozenset(
         "error_kind",
         "fallback_reason",
         "fallback_used",
+        "has_page_numbers",
         "model",
         "outcome",
         "page_count",

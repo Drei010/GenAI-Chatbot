@@ -1,15 +1,16 @@
 # PDF Knowledge Chatbot
 
-A Streamlit app that answers natural-language questions about an uploaded PDF. Every supported answer is
-followed by its **Sources**: the filename, the 1-based page number and a short excerpt copied from the
-document. When the document doesn't support an answer, the app says so instead of guessing.
+A Streamlit app that answers natural-language questions about an uploaded PDF or Word (.docx) document.
+Every supported answer is followed by its **Sources**: the filename, the 1-based page number (or, for a Word
+file that doesn't record its page breaks, the section) and a short excerpt copied from the document. When
+the document doesn't support an answer, the app says so instead of guessing.
 
 - Ask follow-up questions; the last eight messages give them context.
 - Compound questions are split into up to four searches; comparisons come back as tables with a source per
   row, and summaries as cited bullet points.
 - Financial answers keep the document's units and periods and keep fiscal and calendar years apart.
 - Two models, a primary and a fallback: a rate-limited request is retried once on the fallback.
-- Nothing is saved: the PDF, its search index and the chat live in memory for the browser session.
+- Nothing is saved: the document, its search index and the chat live in memory for the browser session.
 
 How it works, and the alternatives considered, are in [docs/architecture.md](docs/architecture.md). The
 build log is in [docs/project_journal.md](docs/project_journal.md).
@@ -83,7 +84,8 @@ Notes:
 uv run streamlit run app.py
 ```
 
-Open http://localhost:8501, upload a PDF in the sidebar, wait for "is ready", and ask a question. Use
+Open http://localhost:8501, upload a PDF or Word (.docx) file in the sidebar, wait for "is ready", and ask
+a question. Use
 **Reset chat and document** to start over; uploading a different file replaces the document and its chat.
 
 ## Sample document
@@ -102,7 +104,24 @@ the evaluation's expected pages refer to the included file. Upload it through th
 - What was Apple's revenue in fiscal year 2023? *(the report doesn't say, so the app declines)*
 
 Indexing its 84 pages takes under half a minute and makes one model call to find the section structure.
-The cover and back page are images, so the app notes that two pages have no selectable text.
+The cover and back page are images, so the app notes that two pages have no text to read.
+
+## Word documents
+
+The app also takes Word files (.docx), recognized by their content rather than their name. It reads the
+document body in order: paragraphs, tables (one line per row, with cells separated by `|`), text boxes and
+the displayed result of fields. Deleted text in tracked changes, hidden text and field codes are skipped.
+Paragraphs in Word's heading styles become the sections that sources name.
+
+Word files don't store their page layout, so a source shows a page number only when the file records where
+its pages break and those breaks add up: Word saves the page count, and marks where pages broke when it
+last laid the document out, and the app checks one against the other. When they don't add up (common for
+files written by other apps or converted from another format), each source shows its section and an
+excerpt instead, and the sidebar says "No page numbers in this file". The Word edition of the sample report
+is one of these: Word saved its page count as 85, but the file marks only 21 of the breaks between those
+pages. Exporting such a file to PDF from Word gives page numbers.
+
+Older .doc files and password-protected Word files are turned away with a message that says what to do.
 
 ## Tests
 
@@ -112,8 +131,9 @@ uv run pytest --cov                             # the same, with coverage (100% 
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The default run is deterministic and offline: test PDFs are generated with reportlab, and model calls go
-to scripted fakes (`tests/support/fake_llm.py`). No test in it calls a provider or needs a key.
+The default run is deterministic and offline: test PDFs are generated with reportlab and test Word files
+from WordprocessingML snippets (`tests/support/docx.py`), and model calls go to scripted fakes
+(`tests/support/fake_llm.py`). No test in it calls a provider or needs a key.
 
 ### Browser tests (Playwright)
 
@@ -125,9 +145,9 @@ npx playwright test --project=chromium   # one browser
 ```
 
 Playwright starts the real app with a rule-based stand-in for the model (`tests/e2e/fake_llm_app.py`) and
-uploads generated PDFs. The tests cover upload, a question with its sources, a follow-up, bullet and table
-answers, an unsupported question, an invalid file, reset and replacement. Screenshots of each state are
-saved to `test-results/screenshots/<browser>/`.
+uploads generated PDFs and Word files. The tests cover upload, a question with its sources, a follow-up,
+bullet and table answers, an unsupported question, an invalid file, reset, replacement, and Word files
+cited by page and by section. Screenshots of each state are saved to `test-results/screenshots/<browser>/`.
 
 ### Evaluation
 
@@ -162,7 +182,7 @@ artifacts. Live-model tests are excluded.
 
 ## Privacy and data handling
 
-- The PDF, its chunks and embeddings, and the chat stay in server memory for the browser session and are
+- The document, its chunks and embeddings, and the chat stay in server memory for the browser session and are
   dropped on reset, replacement, or when the session ends. Nothing is written to disk except the
   embedding model cache.
 - Embeddings are computed locally. The question and the retrieved excerpts (up to four passages per
@@ -178,7 +198,10 @@ artifacts. Live-model tests are excluded.
 app.py                       Streamlit UI
 genai_chatbot/
   config.py                  Settings (Pydantic) from env, .env or Streamlit secrets
-  pdf_processing.py          Upload checks and page text extraction
+  extraction.py              Recognizes an upload as a PDF or Word file and reads it
+  documents.py               Upload problems and messages, limits, document IDs
+  pdf_processing.py          PDF page text extraction and cleaning
+  docx_processing.py         Word text extraction, heading styles and page breaks
   chunking.py                Complexity rules, section detection, chunking and validation
   providers.py               Model factory and the primary/fallback router
   vector_store.py            In-memory Chroma collections with local embeddings
@@ -192,15 +215,19 @@ tests/
   unit/, integration/        pytest suites
   evaluation/                Question set, page locator, harness and live runner
   e2e/                       Playwright tests and the stand-in model app
-  support/                   Generated PDFs and fake models
+  support/                   Generated PDFs and Word files, and fake models
 docs/architecture.md         Design and alternatives considered
 docs/project_journal.md      Per-feature build log
 ```
 
 ## Known limitations (v1)
 
-- One PDF at a time, and the chat lasts only as long as the browser session.
-- No OCR: scanned PDFs without a text layer are rejected with an explanation.
+- One document at a time, and the chat lasts only as long as the browser session.
+- No OCR: scanned PDFs without a text layer are rejected with an explanation, and text inside pictures in
+  Word files isn't read.
+- Word files get page numbers only when the page breaks they record add up (see *Word documents*);
+  otherwise sources name the section. Headers, footers, footnotes, endnotes and comments in Word files
+  aren't read, and older .doc files aren't supported.
 - Tables are read as lines of text (pypdf), so complex multi-column tables can lose their column structure.
 - Every source cites a single page; a passage that continues across a page break is split at the break.
 - Answers appear when they are complete (not streamed), because citations are checked first.
@@ -218,4 +245,7 @@ docs/project_journal.md      Per-feature build log
 - **"The AI service is getting too many requests…"** Both models were rate limited. Wait a minute, or
   configure a fallback on a different provider.
 - **"No selectable text was found in this PDF…"** It's a scan or image-only PDF; v1 has no OCR.
+- **"This is an older Word (.doc) file…"** Open it in Word and save it as .docx or PDF.
+- **Sources show a section instead of a page number.** The Word file doesn't record where its pages
+  break. Export it to PDF from Word to get page numbers.
 - **The first start is slow.** The embedding model is downloading; later starts use the cache.

@@ -8,7 +8,7 @@ from typing import get_args
 import pytest
 
 from genai_chatbot.config import load_settings
-from genai_chatbot.pdf_processing import extract_document
+from genai_chatbot.extraction import extract_document
 from tests.evaluation.harness import Category, load_items
 from tests.evaluation.locate_pages import QUESTIONS, locate, problems
 from tests.evaluation.run_eval import TARGETS, evaluate_sample, write_report

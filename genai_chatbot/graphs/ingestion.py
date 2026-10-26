@@ -1,4 +1,4 @@
-"""LangGraph workflow that turns an uploaded PDF into indexed, citation-ready chunks.
+"""LangGraph workflow that turns an uploaded PDF or Word document into indexed, citation-ready chunks.
 
 extract -> classify -> simple:  chunk_recursive -> validate -> index_chunks
                     -> complex: chunk_with_model -> validate -> index_chunks
@@ -25,8 +25,8 @@ from genai_chatbot.chunking import (
     recursive_chunks,
     validate_chunks,
 )
+from genai_chatbot.extraction import extract_document
 from genai_chatbot.observability import Correlation, log_stage
-from genai_chatbot.pdf_processing import extract_document
 from genai_chatbot.prompts import outline_messages
 from genai_chatbot.providers import ErrorKind, LLMRouter, ProviderError
 from genai_chatbot.schemas import Chunk, ChunkStrategy, ComplexityAssessment, ExtractedDocument, SectionOutline
@@ -41,7 +41,7 @@ class ChunkIndex(Protocol):
 
 
 class IngestionError(RuntimeError):
-    """The PDF was readable but couldn't be turned into valid passages."""
+    """The document was readable but couldn't be turned into valid passages."""
 
 
 class IngestionState(TypedDict, total=False):
@@ -63,6 +63,7 @@ class IngestionResult:
     filename: str
     page_count: int
     pages_without_text: int
+    has_page_numbers: bool
     chunk_count: int
     is_complex: bool
     strategy: ChunkStrategy
@@ -77,6 +78,7 @@ class IngestionResult:
             filename=document.filename,
             page_count=document.page_count,
             pages_without_text=document.pages_without_text,
+            has_page_numbers=document.has_page_numbers,
             chunk_count=state["indexed_count"],
             is_complex=state["assessment"].is_complex,
             strategy=state["strategy"],
@@ -95,10 +97,10 @@ def build_ingestion_graph(
     """Compile the ingestion workflow for one upload. `router=None` skips model-assisted chunking."""
 
     def extract(state: IngestionState) -> IngestionState:
-        _progress("extract", "Reading the PDF…", 0.05)
+        _progress("extract", "Reading the document…", 0.05)
         with log_stage("extract", correlation) as details:
             document = extract_document(state["file_bytes"], state["filename"])
-            details["page_count"] = document.page_count
+            details.update(page_count=document.page_count, has_page_numbers=document.has_page_numbers)
         return {"document": document}
 
     def classify(state: IngestionState) -> IngestionState:
@@ -204,7 +206,7 @@ def ingest(
     data: bytes,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> IngestionResult:
-    """Run the ingestion graph, forwarding progress events. Raises PDFProcessingError or IngestionError."""
+    """Run the ingestion graph, forwarding progress events. Raises DocumentError or IngestionError."""
     final: IngestionState = {}
     for mode, payload in graph.stream(
         {"filename": filename, "file_bytes": data}, stream_mode=["custom", "values"]

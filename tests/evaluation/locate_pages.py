@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from genai_chatbot.pdf_processing import extract_document
+from genai_chatbot.extraction import extract_document
 from genai_chatbot.schemas import PageText
 from tests.evaluation.harness import EvalItem, contains, load_items, point_found, save_items
 from tests.support.paths import SAMPLE_REPORT

@@ -2,13 +2,16 @@ import { expect, test, type Locator, type Page, type TestInfo } from "@playwrigh
 import path from "node:path";
 
 // Every test opens a fresh browser session against the app in tests/e2e/fake_llm_app.py, which answers
-// from the uploaded PDF with rules instead of a real model. Screenshots of each state are saved to
+// from the uploaded document with rules instead of a real model. Screenshots of each state are saved to
 // test-results/screenshots/<browser>/ for review.
 
 const FIXTURES = path.join(__dirname, "fixtures", "generated");
 const NORTHWIND = "northwind-annual-report.pdf";
 const HARBOR_TEA = "harbor-tea-report.pdf";
-const NOT_A_PDF = "notes.pdf";
+const HARBOR_TEA_WORD = "harbor-tea-report.docx";
+const HARBOR_TEA_NOTES = "harbor-tea-notes.docx";
+const NOT_A_DOCUMENT = "notes.pdf";
+const GET_STARTED = "Upload a PDF or Word file in the sidebar to get started.";
 
 const chatBox = (page: Page) => page.getByTestId("stChatInputTextArea");
 const userMessages = (page: Page) => page.getByRole("group", { name: "Chat message from user" });
@@ -24,7 +27,7 @@ async function snap(page: Page, testInfo: TestInfo, name: string): Promise<void>
 
 async function openApp(page: Page): Promise<void> {
   await page.goto("/");
-  await expect(page.getByText("Upload a PDF in the sidebar to get started.")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(GET_STARTED)).toBeVisible({ timeout: 60_000 });
 }
 
 async function upload(page: Page, filename: string): Promise<void> {
@@ -58,7 +61,7 @@ async function expectSource(reply: Locator, number: number, filename: string, pa
 test("answers a question with its source, then a follow-up", async ({ page }, testInfo) => {
   await openApp(page);
   await expect(chatBox(page)).toBeDisabled();
-  await expect(chatBox(page)).toHaveAttribute("placeholder", "Upload a PDF to start asking questions");
+  await expect(chatBox(page)).toHaveAttribute("placeholder", "Upload a document to start asking questions");
   await snap(page, testInfo, "01-before-upload");
 
   await uploadAndWait(page, NORTHWIND, 5);
@@ -107,14 +110,13 @@ test("says so when the document doesn't answer the question", async ({ page }, t
   await snap(page, testInfo, "07-unsupported-question");
 });
 
-test("explains why a file that isn't a real PDF can't be used", async ({ page }, testInfo) => {
+test("explains why a file that isn't a PDF or Word document can't be used", async ({ page }, testInfo) => {
   await openApp(page);
 
-  await upload(page, NOT_A_PDF);
+  await upload(page, NOT_A_DOCUMENT);
 
-  await expect(page.getByText("This file isn't a PDF. Upload a document saved in PDF format.")).toBeVisible({
-    timeout: 60_000,
-  });
+  const problem = "This file isn't a PDF or a Word (.docx) document. Upload a file saved in one of those formats.";
+  await expect(page.getByText(problem)).toBeVisible({ timeout: 60_000 });
   await expect(chatBox(page)).toBeDisabled();
   await snap(page, testInfo, "08-invalid-pdf");
 });
@@ -127,7 +129,7 @@ test("reset clears the conversation and the document", async ({ page }, testInfo
 
   await resetButton(page).click();
 
-  await expect(page.getByText("Upload a PDF in the sidebar to get started.")).toBeVisible();
+  await expect(page.getByText(GET_STARTED)).toBeVisible();
   await expect(assistantMessages(page)).toHaveCount(0);
   await expect(userMessages(page)).toHaveCount(0);
   await expect(page.getByTestId("stFileChip")).toHaveCount(0);
@@ -150,4 +152,25 @@ test("replacing the document starts a fresh conversation about the new file", as
   await expect(reply).toContainText("85 people");
   await expectSource(reply, 1, HARBOR_TEA, 1);
   await snap(page, testInfo, "12-after-replacement");
+});
+
+test("answers from Word documents, citing pages Word recorded and sections otherwise", async ({ page }, testInfo) => {
+  await openApp(page);
+  await uploadAndWait(page, HARBOR_TEA_WORD, 2);
+
+  const reply = await ask(page, "How many new shops did Harbor Tea open?");
+  await expect(reply).toContainText("two new shops");
+  await expectSource(reply, 1, HARBOR_TEA_WORD, 2);
+  await snap(page, testInfo, "13-word-document-with-pages");
+
+  await upload(page, HARBOR_TEA_NOTES);
+  await expect(page.getByText(`${HARBOR_TEA_NOTES} is ready.`, { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText("This Word file doesn't record where its pages break")).toBeVisible();
+  await expect(chatBox(page)).toBeEnabled();
+
+  const notesReply = await ask(page, "How many new shops did Harbor Tea open?");
+  await expect(notesReply).toContainText("two new shops");
+  const source = `[1] ${HARBOR_TEA_NOTES}, section “Harbor Tea Company › Shops and Growth”`;
+  await expect(notesReply.getByText(source, { exact: true })).toBeVisible();
+  await snap(page, testInfo, "14-word-document-with-sections");
 });

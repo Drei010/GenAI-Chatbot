@@ -64,6 +64,21 @@ def test_markers_are_renumbered_by_first_use(passages):
     ]
 
 
+def test_sources_carry_the_section_of_their_passage():
+    sectioned = RetrievedPassage(
+        chunk_id="w-1",
+        filename="report.docx",
+        page_number=1,
+        text=PAGE_3,
+        section_title="Our People",
+        score=0.5,
+    )
+
+    resolved = resolve_citations("Northwind employed 2,340 people [P1].", ["P1"], passage_labels([sectioned]))
+
+    assert resolved.citations[0].section_title == "Our People"
+
+
 def test_answers_citing_nothing_or_unknown_passages_are_rejected(passages):
     with pytest.raises(CitationError, match="no passages"):
         resolve_citations("Revenue was $412.6 million.", [], passages)

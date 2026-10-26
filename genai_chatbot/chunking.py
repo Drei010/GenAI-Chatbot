@@ -1,7 +1,8 @@
 """Classify document complexity and split pages into citation-ready chunks.
 
 Every chunk stays inside one page, so each source can be cited with a single page number, and every
-chunk is an exact substring of its page's cleaned text, so excerpts can be shown verbatim.
+chunk is an exact substring of its page's cleaned text, so excerpts can be shown verbatim. (For a Word
+file without recorded page breaks, the "pages" are parts of about a page; see docx_processing.py.)
 """
 
 from __future__ import annotations
@@ -125,12 +126,25 @@ def _lines_with_offsets(text: str) -> Iterable[tuple[int, str]]:
 
 
 def detect_headings(document: ExtractedDocument, *, include_weak: bool = False) -> list[HeadingCandidate]:
-    """Find heading-like lines in document order."""
+    """Find heading-like lines in document order. A document that marks its own headings (Word heading
+    styles) has those used instead of headings guessed from the text."""
+    styled = any(page.headings for page in document.pages)
     found: list[HeadingCandidate] = []
     for page in document.pages:
+        styled_levels = {heading.offset: heading.level for heading in page.headings}
         lines = list(_lines_with_offsets(page.text))
         for index, (offset, line) in enumerate(lines):
-            if not line or len(line) > MAX_HEADING_CHARS or is_table_line(line):
+            if not line or len(line) > MAX_HEADING_CHARS:
+                continue
+            if styled:
+                if offset in styled_levels:
+                    found.append(
+                        HeadingCandidate(
+                            "", page.page_number, offset, line, styled_levels[offset], strong=True, score=2.0
+                        )
+                    )
+                continue
+            if is_table_line(line):
                 continue
             level = _strong_level(line)
             if level is not None:
